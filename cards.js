@@ -87,4 +87,3 @@ window.ARTIFACTS = [
     art: "calendar",
   },
 ];
-
