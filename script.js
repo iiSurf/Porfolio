@@ -311,8 +311,9 @@
     placeSkaters(now);
     drawBlades(now);
     tickSnow(now, dt);
-    requestAnimationFrame(frame);
+    requestAnimationFrame(loopRef);
   }
+  var loopRef = frame;
 
   /* ---------- Snow and glitter ---------- */
 
@@ -691,28 +692,42 @@
 
   /* ---------- Start ---------- */
 
-  renderCards();
-  bindDialog();
-  buildStars();
-  buildTreeline();
-  buildPines();
-  buildLanterns();
-  buildWindows();
-  buildIce();
-  buildSkaters();
-  bindHotspots();
-  initSnow();
-  measure();
-  window.addEventListener("resize", measure);
-  bindParallax();
+  // Each step runs on its own, so a problem in one part of the scene never hides the cards.
+  function safely(name, fn) {
+    try { fn(); } catch (e) { if (window.console) console.error("Portfolio: " + name + " failed", e); }
+  }
+  safely("cards", renderCards);
+  safely("card pop-up", bindDialog);
+  safely("stars", buildStars);
+  safely("trees", buildTreeline);
+  safely("pines", buildPines);
+  safely("lanterns", buildLanterns);
+  safely("windows", buildWindows);
+  safely("ice", buildIce);
+  safely("skaters", buildSkaters);
+  safely("secrets", bindHotspots);
+  safely("snow", initSnow);
+  safely("layout", measure);
+  window.addEventListener("resize", function () { safely("layout", measure); });
+  safely("parallax", bindParallax);
   if (!reduceMotion) {
-    requestAnimationFrame(frame);
-    setTimeout(walkFox, 7000);
-    setTimeout(shootingStar, 6000);
+    var frameFailed = false;
+    var loop = function (now) {
+      try { frame(now); } catch (e) {
+        if (!frameFailed && window.console) console.error("Portfolio: animation failed", e);
+        frameFailed = true;
+      }
+    };
+    loopRef = loop;
+    requestAnimationFrame(loop);
+    setTimeout(function () { safely("fox", walkFox); }, 7000);
+    setTimeout(function () { safely("shooting star", shootingStar); }, 6000);
   } else {
-    $("fox").setAttribute("transform", "translate(700,668) scale(1.3)");
-    placeSkaters(performance.now());
-    drawBlades(performance.now());
-    drawSnow(0);
+    safely("still scene", function () {
+      $("fox").setAttribute("transform", "translate(700,668) scale(1.3)");
+      placeSkaters(performance.now());
+      drawBlades(performance.now());
+      drawSnow(0);
+    });
   }
 })();

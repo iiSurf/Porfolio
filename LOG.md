@@ -108,3 +108,17 @@ What I asked the AI for, what changed, and what I decided. Newest entries go at 
 - The big heading, the browser tab title, and the Artifact 1 card title now say "My Portfolio".
 - The name and About text sit on a dark frosted panel, and the links, music hint and "Five artifacts" label have dark backgrounds, so they stay readable over the mountains and sky.
 - On tall phone screens the scene shows more sky, so the castle sits below the text instead of behind it.
+
+---
+
+## 2026-10-12 · Fixing a blank-looking site
+
+### What happened
+
+- My downloaded copy of script.js was empty and index.html had the page twice, so the cards, snow, skaters and blade marks didn't show.
+- I got clean files as one zip instead of copying them one by one.
+
+### What changed
+
+- The page now starts each part of the scene separately, so if one part fails the cards still show.
+- If script.js or cards.js is missing or empty, the cards area now says so instead of staying blank.
