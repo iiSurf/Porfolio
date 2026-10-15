@@ -1,7 +1,1923 @@
 /*
-  The scene, the blade marks on the ice, snow, hidden secrets, the music box, and the artifact cards.
+  Runs the frozen lake (figure skaters practising axels, glowing skate marks, falling snow, the fox,
+  the hidden secrets and the music box) and builds a shop in the village for every card in cards.js.
   You shouldn't need to edit this file to fill in a card; use cards.js.
+
+  The file has two parts:
+  1. The skater engine (createSkaterRink): small paper-cut figure skaters who glide, set up and try
+     axel jumps, sometimes landing, sometimes two-footing, sometimes falling and getting back up.
+  2. The page itself, which places the engine on the lake and runs everything else.
 */
+
+/* ======================================================================================
+   1. Skater engine
+   ====================================================================================== */
+/*
+ * skaters.js - figure skaters practising axel jumps, for the portfolio hero.
+ * Plain ES5, no dependencies. Defines one global function: createSkaterRink(opts).
+ *
+ * opts = {
+ *   layer:     SVGGElement   skaters are drawn here
+ *   reflLayer: SVGGElement   mirrored reflections are drawn here (give it a low opacity)
+ *   ice: { icePolygon: [[x,y],...], horizonY, nearY, skaterHeightFar, skaterHeightNear, farY? }
+ *              (viewBox units; farY is optional, when given skaterHeightFar applies at farY)
+ *   count: 4, seed: 1, reduceMotion: false
+ * }
+ * returns rink = {
+ *   step(nowMs)      advance + render (call every animation frame)
+ *   setIce(ice)      new layout; skaters are kept and re-clamped into the new polygon
+ *   blades()         [{x, y, onIce, scrape, color:"r,g,b"}] one per skater, this frame
+ *   skaterAt(x, y)   index of the skater under a viewBox point, or -1
+ *   trigger(i)       skater i attempts an axel as soon as possible; returns what the skater is doing now:
+ *                    'setup' (the attempt starts within a few seconds), 'jumping' (one is under way, another
+ *                    follows), 'getup' (after getting up from a fall), 'after' (right after this move), '' (none)
+ *   elements()       each skater's root <g> (for click handlers; it is re-ordered for depth every frame)
+ *   boxes()          [[x0, y0, x1, y1], ...] each skater's on-screen box this frame (viewBox units)
+ *   setLite(on)      true: cheaper frames (slow device), false: full quality, null: decide by its own timing
+ * }
+ *
+ * blades(): onIce is false in the air, while sliding / sitting / kneeling after a fall, and in
+ * reduceMotion (nobody moves, so no marks are cut); scrape is true during the fall slide.
+ * reduceMotion: skaters are placed once in still poses (one-leg glides, a landing pose) and
+ * step() does nothing.
+ *
+ * How it works: each skater is a small 3D skeleton (pelvis, spine, head, two-bone IK legs
+ * and arms) posed by blending numeric pose vectors. Every frame the skeleton is turned to
+ * the skater's facing direction, projected, and the flat paper-cut parts (built once) are
+ * moved by updating their transforms only (through the SVG DOM, SVGTransform.setMatrix /
+ * setTranslate, with a setAttribute fallback); the DOM is never rebuilt. The skaters travel
+ * on the ice in a perspective "world" plane recovered from the ice description, so far
+ * skaters move slower and smaller, and steering keeps them inside the polygon and apart.
+ *
+ * Cost: about 0.15 ms per skater per frame on a laptop (~0.5 ms at 4x CPU throttle). The
+ * faint reflection refreshes its limbs at 20 Hz (full rate in the air), and if step() keeps
+ * costing more than ~3 ms, or the page calls setLite(true) because whole frames are slow (a slow
+ * phone), it drops to 10 Hz and steering re-plans less often.
+ * rink._debug holds testing hooks (force an outcome, freeze a pose, inspect state); it is
+ * not part of the public contract.
+ */
+(function (root) {
+  'use strict';
+
+  var NS = 'http://www.w3.org/2000/svg';
+  var PI = Math.PI, TAU = PI * 2;
+  var RINK_ID = 0;
+
+  /* ------------------------------------------------------------------ helpers */
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function sstep(t) { t = t < 0 ? 0 : (t > 1 ? 1 : t); return t * t * (3 - 2 * t); }
+  function ease(t) { t = t < 0 ? 0 : (t > 1 ? 1 : t); return t * t * t * (t * (t * 6 - 15) + 10); }
+  function wrap(a) { a = (a + PI) % TAU; if (a <= 0) a += TAU; return a - PI; }
+  function mulberry(s) {
+    s = s >>> 0;
+    return function () {
+      s = (s + 0x6D2B79F5) >>> 0;
+      var t = s;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function n2(v) { return Math.round(v * 100) / 100; }
+  function n3(v) { return Math.round(v * 1000) / 1000; }
+  function el(tag, at, parent) {
+    var e = document.createElementNS(NS, tag);
+    if (at) for (var k in at) if (at.hasOwnProperty(k)) e.setAttribute(k, at[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  var AK = {};
+  function setA(e, k, v) { var c = AK[k] || (AK[k] = '_a' + k); if (e[c] !== v) { e.setAttribute(k, v); e[c] = v; } }
+  function m6(m, a, b, c, d, e, f) { m[0] = a; m[1] = b; m[2] = c; m[3] = d; m[4] = e; m[5] = f; return m; }
+  /* Transforms are written through the SVG DOM (SVGTransform.setMatrix) when available: no string
+     building or parsing, about 2.5x cheaper than setAttribute('transform', ...). Unchanged values are
+     skipped. Falls back to the attribute where the SVG DOM is missing. */
+  var SVG_ROOT = null, SVG_M = null;
+  function initSvgDom(node) {
+    if (SVG_M) return;
+    try {
+      var svg = node && (node.ownerSVGElement || (node.tagName && node.tagName.toLowerCase() === 'svg' ? node : null));
+      if (!svg || !svg.createSVGMatrix || !svg.createSVGTransform) return;
+      // self-test on a detached element: both write paths must work and read back correctly
+      var g = document.createElementNS(NS, 'g'), bl = g.transform.baseVal, m = svg.createSVGMatrix();
+      bl.initialize(svg.createSVGTransform());
+      var tf = bl.getItem(0);
+      m.a = 2; m.b = 0.5; m.c = -0.5; m.d = 2; m.e = 7; m.f = -3;
+      tf.setMatrix(m);
+      var ok = Math.abs(tf.matrix.a - 2) < 1e-6 && Math.abs(tf.matrix.c + 0.5) < 1e-6 && Math.abs(tf.matrix.f + 3) < 1e-6;
+      tf.setTranslate(4, 5);
+      ok = ok && Math.abs(tf.matrix.e - 4) < 1e-6 && Math.abs(tf.matrix.f - 5) < 1e-6 && Math.abs(tf.matrix.a - 1) < 1e-6;
+      if (ok) { SVG_ROOT = svg; SVG_M = m; }
+    } catch (err) { SVG_ROOT = null; SVG_M = null; }
+  }
+
+  // a slot = one animated element + the last matrix written to it (plain objects: fast, monomorphic)
+  function slot(e, idx, translateOnly) { return { e: e, i: idx, tr: !!translateOnly, m: [NaN, 0, 0, 0, 0, 0], tf: null }; }
+  var TOL_T = 0.01, TOL_M = 4e-4;   // figure units (100 = skater height): far below a device pixel
+  function setS(s, m) {
+    var c = s.m;
+    if (Math.abs(c[4] - m[4]) < TOL_T && Math.abs(c[5] - m[5]) < TOL_T && (s.tr || (Math.abs(c[0] - m[0]) < TOL_M &&
+      Math.abs(c[1] - m[1]) < TOL_M && Math.abs(c[2] - m[2]) < TOL_M && Math.abs(c[3] - m[3]) < TOL_M))) return;
+    c[0] = m[0]; c[1] = m[1]; c[2] = m[2]; c[3] = m[3]; c[4] = m[4]; c[5] = m[5];
+    if (SVG_M) {
+      var tf = s.tf;
+      if (!tf) {
+        var bl = s.e.transform.baseVal;
+        bl.initialize(SVG_ROOT.createSVGTransform());
+        tf = s.tf = bl.getItem(0);
+      }
+      if (s.tr) tf.setTranslate(m[4], m[5]);
+      else { SVG_M.a = m[0]; SVG_M.b = m[1]; SVG_M.c = m[2]; SVG_M.d = m[3]; SVG_M.e = m[4]; SVG_M.f = m[5]; tf.setMatrix(SVG_M); }
+    } else s.e.setAttribute('transform', s.tr ? 'translate(' + n2(m[4]) + ',' + n2(m[5]) + ')' : mtx(m[0], m[1], m[2], m[3], m[4], m[5]));
+  }
+
+  function hexRgb(h) {
+    h = h.replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var n = parseInt(h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function rgbHex(c) {
+    return '#' + ((1 << 24) | (Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])).toString(16).slice(1);
+  }
+  function shade(h, t) {
+    var a = hexRgb(h), b = [30, 18, 64];
+    return rgbHex([lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]);
+  }
+  function mtx(a, b, c, d, e, f) {
+    return 'matrix(' + n3(a) + ',' + n3(b) + ',' + n3(c) + ',' + n3(d) + ',' + n2(e) + ',' + n2(f) + ')';
+  }
+
+  /* ------------------------------------------------------------------ skeleton
+     Figure units: 100 = standing height including skates. Body frame: x forward,
+     y up, z to the skater's left. Origin = point on the ice under the pelvis. */
+  var ANK = 9, SHIN = 22, THIGH = 23, LEG = SHIN + THIGH;
+  var HIPW = 4.2, HIPDY = -1;
+  var SPINE = 30, SHW = 8.5, SHDY = -2.5;
+  var UARM = 15.5, FARM = 13;
+  var NECK = 3.6, HEADC = 5.6;
+
+  /* ------------------------------------------------------------------ poses
+     py   pelvis height          lift  (not blended, airborne offset)
+     roll whole-body lean left+  bp    whole-body pitch forward+
+     sp   spine pitch forward+   sr    spine side bend left+   tw torso twist left+
+     hp   head pitch down+       hy    head yaw left+
+     lx..ro feet: ankle target (x fwd, y = ankle height - 9, z left), t toe-down pitch, o toe yaw
+     ax..bz left/right hand target relative to the shoulder in torso frame (hb=0)
+           or absolute in body frame (hb=1)
+     fl   skirt flare */
+  var KEYS = ['py', 'lift', 'roll', 'bp', 'sp', 'sr', 'tw', 'hp', 'hy',
+    'lx', 'ly', 'lz', 'lt', 'lo', 'rx', 'ry', 'rz', 'rt', 'ro',
+    'ax', 'ay', 'az', 'bx', 'by', 'bz', 'hb', 'fl'];
+  var NK = KEYS.length, K = {};
+  for (var ki = 0; ki < NK; ki++) K[KEYS[ki]] = ki;
+
+  var BASE_O = { py: 53, lift: 0, roll: 0, bp: 0, sp: 0.06, sr: 0, tw: 0, hp: 0.02, hy: 0,
+    lx: 0.5, ly: 0, lz: 4.2, lt: 0, lo: 0.15, rx: 0.5, ry: 0, rz: -4.2, rt: 0, ro: -0.15,
+    ax: 2, ay: -25, az: 6, bx: 2, by: -25, bz: -6, hb: 0, fl: 0 };
+
+  function mkPose(o, base) {
+    var a, k;
+    if (base) a = base.slice();
+    else { a = new Array(NK); for (k in BASE_O) a[K[k]] = BASE_O[k]; }
+    for (k in o) if (o.hasOwnProperty(k)) a[K[k]] = o[k];
+    return a;
+  }
+  function copyP(out, a) { for (var i = 0; i < NK; i++) out[i] = a[i]; return out; }
+  function mixP(out, a, b, t) { for (var i = 0; i < NK; i++) out[i] = a[i] + (b[i] - a[i]) * t; return out; }
+  function mirrorP(a, out) {
+    var i;
+    for (i = 0; i < NK; i++) out[i] = a[i];
+    out[K.lx] = a[K.rx]; out[K.ly] = a[K.ry]; out[K.lz] = -a[K.rz]; out[K.lt] = a[K.rt]; out[K.lo] = -a[K.ro];
+    out[K.rx] = a[K.lx]; out[K.ry] = a[K.ly]; out[K.rz] = -a[K.lz]; out[K.rt] = a[K.lt]; out[K.ro] = -a[K.lo];
+    out[K.ax] = a[K.bx]; out[K.ay] = a[K.by]; out[K.az] = -a[K.bz];
+    out[K.bx] = a[K.ax]; out[K.by] = a[K.ay]; out[K.bz] = -a[K.az];
+    out[K.roll] = -a[K.roll]; out[K.sr] = -a[K.sr]; out[K.tw] = -a[K.tw]; out[K.hy] = -a[K.hy];
+    return out;
+  }
+
+  var P_STAND = mkPose({});
+  var P_TWO = mkPose({ py: 51, sp: 0.12, lx: 0.5, lz: 4, rx: 0.5, rz: -4, ax: 5, ay: -10, az: 23, bx: 5, by: -10, bz: -23 });
+  var P_GLIDE_R = mkPose({ py: 49.5, sp: 0.2, rx: 1, ry: 0, rz: -1.5, ro: -0.05, lx: -24, ly: 6, lz: 4, lt: 0.55, lo: 0.45,
+    ax: 6, ay: -7, az: 25, bx: 6, by: -7, bz: -25, hp: -0.05 });
+  var P_GLIDE_L = mirrorP(P_GLIDE_R, new Array(NK));
+  var P_THREE = mkPose({ py: 48.5, sp: 0.16, lx: 1, ly: 0, lz: 1.5, lo: 0.05, rx: -7, ry: 5, rz: -3, rt: 0.4, ro: -0.1,
+    ax: 10, ay: -9, az: 18, bx: -6, by: -9, bz: -20, tw: 0.25 });
+  var P_MOHAWK = mkPose({ py: 48.5, sp: 0.14, rx: 1, ry: 0, rz: -1.5, ro: -0.05, lx: -6, ly: 5, lz: 3, lt: 0.4, lo: 0.1,
+    ax: -6, ay: -9, az: 20, bx: 10, by: -9, bz: -18, tw: -0.25 });
+  // the long one-leg glide before the jump: the free boot is held well clear of the ice behind (about 15% of height)
+  var P_LFO = mkPose({ py: 47, sp: 0.21, lx: 2, ly: 0, lz: 1.5, lo: 0.05, rx: -28, ry: 21, rz: -3.5, rt: 0.42, ro: -0.45,
+    ax: -8, ay: -15, az: 18, bx: -13, by: -14, bz: -16, hp: -0.04 });
+  var P_LOAD = mkPose({ py: 41, sp: 0.34, lx: 3, ly: 0, lz: 1.5, lo: 0.05, rx: -12, ry: 2.5, rz: -3.5, rt: 0.4, ro: -0.2,
+    ax: -19, ay: -15, az: 10, bx: -19, by: -15, bz: -10, hp: 0.04 });
+  var P_TAKEOFF = mkPose({ py: 56, sp: -0.04, lx: 0.5, ly: 0, lz: 1, lt: 0.75, lo: 0, rx: 13, ry: 23, rz: -3, rt: 0.35, ro: 0,
+    ax: 13, ay: -3, az: 7, bx: 13, by: -3, bz: -7, hp: -0.1 });
+  var P_AIR = mkPose({ py: 53.5, sp: 0.03, rx: 0, ry: 0.5, rz: -1.2, rt: 0.55, ro: 0, lx: 3, ly: 6, lz: -3.2, lt: 0.6, lo: -0.25,
+    ax: 6, ay: -11, az: -8, bx: 6, by: -9, bz: 8, hp: -0.04, fl: 1 });
+  var P_AIR_OPEN = mkPose({ py: 53.5, sp: 0.05, rx: 0, ry: 0, rz: -1.5, rt: 0.5, ro: 0, lx: -12, ly: 9, lz: 3.5, lt: 0.5, lo: 0.3,
+    ax: 6, ay: -9, az: 18, bx: 6, by: -9, bz: -18, fl: 0.6 });
+  var P_WALTZ_AIR = mkPose({ py: 53.5, sp: 0.05, rx: 10, ry: 12, rz: -3, rt: 0.5, lx: -16, ly: 8, lz: 3, lt: 0.6, lo: 0.2,
+    ax: 8, ay: 4, az: 18, bx: 8, by: 4, bz: -18, fl: 0.5 });
+  var P_LAND = mkPose({ py: 44, sp: 0.26, rx: 0.5, ry: 0, rz: -1.2, rt: 0, ro: -0.05, lx: -27, ly: 9, lz: 5, lt: 0.6, lo: 0.5,
+    ax: 7, ay: -6, az: 25, bx: 7, by: -6, bz: -25, hp: -0.05, fl: 0.3 });
+  var P_HOLD = mkPose({ py: 49.5, sp: 0.14, rx: 0.5, ry: 0, rz: -1.2, ro: -0.05, lx: -28, ly: 15, lz: 4.5, lt: 0.65, lo: 0.55,
+    ax: 6, ay: -3, az: 26, bx: 6, by: -3, bz: -26, hp: -0.14 });
+  var P_PROUD = mkPose({ py: 52, sp: 0, lx: 0.5, lz: 4, rx: 0.5, rz: -4, ax: 2, ay: 23, az: 12, bx: 2, by: 23, bz: -12, hp: -0.22 });
+  var P_TWO_LAND = mkPose({ py: 40, sp: 0.36, lx: -3, ly: 0, lz: 6.5, rx: 4, ry: 0, rz: -6, lo: 0.3, ro: -0.3,
+    ax: 6, ay: 6, az: 22, bx: 6, by: 6, bz: -22, fl: 0.4 });
+  var P_STEADY = mkPose({ py: 49.5, sp: 0.14, lx: 0, lz: 5, rx: 1, rz: -5, ax: 5, ay: -5, az: 25, bx: 5, by: -5, bz: -25 });
+  var P_EXHALE = mkPose({ py: 52.5, sp: 0.1, lx: 0.5, lz: 4, rx: 0, rz: -4, ax: 5, ay: -22, az: 9, bx: 5, by: -22, bz: -9, hp: 0.12 });
+  var P_BAIL = mkPose({ py: 51.5, sp: 0.1, lx: 1.5, lz: 3.5, rx: -1, rz: -4, ax: 7, ay: -17, az: 13, bx: 7, by: -17, bz: -13 });
+  var P_SHRUG = mkPose({ py: 52.5, sp: 0.05, lx: 1, lz: 4, rx: -0.5, rz: -4, ax: 11, ay: -15, az: 15, bx: 11, by: -15, bz: -15, hp: 0.06, sr: 0.06 });
+  var P_SLIP = mkPose({ py: 33, bp: -0.22, sp: -0.12, rx: 15, ry: 0, rz: -2, rt: -0.3, lx: 9, ly: 7, lz: 6, lt: 0.2,
+    ax: 9, ay: 17, az: 15, bx: 5, by: 13, bz: -18, hp: 0.25, fl: 0.4 });
+  var P_SLIDE = mkPose({ py: 6, roll: 0.28, sp: -0.4, rx: 40, ry: -4, rz: -5, rt: -0.9, lx: 27, ly: -2, lz: 6, lt: -0.5,
+    hb: 1, ax: -16, ay: 1.5, az: 13, bx: 6, by: 32, bz: -20, hp: 0.15, fl: 0.2 });
+  var P_SIT = mkPose({ py: 6, roll: 0.1, sp: -0.55, rx: 42, ry: -5, rz: -5, rt: -1.0, lx: 24, ly: -3, lz: 6, lt: -0.5, lo: 0.2,
+    hb: 1, ax: -18, ay: 1.5, az: 12, bx: -18, by: 1.5, bz: -12, hp: 0.12 });
+  var P_KNEEL = mkPose({ py: 25.5, sp: 1.3, lx: -21, ly: -6, lz: 4.5, lt: 1.15, lo: 0, rx: -21, ry: -6, rz: -4.5, rt: 1.15, ro: 0,
+    hb: 1, ax: 27, ay: 1.5, az: 7, bx: 27, by: 1.5, bz: -7, hp: -0.55 });
+  var P_LUNGE = mkPose({ py: 28, sp: 0.5, rx: 15, ry: 0, rz: -5.5, rt: 0, ro: 0, lx: -20, ly: -6, lz: 5, lt: 1.15, lo: 0,
+    hb: 1, ax: 20, ay: 31, az: -1, bx: 22, by: 30, bz: -7, hp: -0.25 });
+  var P_RISE = mkPose({ py: 50, sp: 0.35, lx: 0.5, lz: 4.5, rx: 2, rz: -4.5, ax: 6, ay: -20, az: 9, bx: 6, by: -20, bz: -9 });
+  var P_BRUSH = mkPose({ py: 46, sp: 1.1, lx: 0.5, lz: 4.5, rx: 0.5, rz: -4.5, hb: 1, ax: 13, ay: 34, az: 5, bx: 13, by: 34, bz: -5, hp: -0.3 });
+
+  var POSES = { stand: P_STAND, two: P_TWO, glideR: P_GLIDE_R, glideL: P_GLIDE_L, three: P_THREE, mohawk: P_MOHAWK,
+    lfo: P_LFO, load: P_LOAD, takeoff: P_TAKEOFF, air: P_AIR, airOpen: P_AIR_OPEN, waltzAir: P_WALTZ_AIR,
+    land: P_LAND, hold: P_HOLD, proud: P_PROUD, twoLand: P_TWO_LAND, steady: P_STEADY, exhale: P_EXHALE,
+    bail: P_BAIL, shrug: P_SHRUG, slip: P_SLIP, slide: P_SLIDE, sit: P_SIT, kneel: P_KNEEL, lunge: P_LUNGE,
+    rise: P_RISE, brush: P_BRUSH };
+
+  /* ------------------------------------------------------------------ stroke generators */
+  var TMP_A = new Array(NK), TMP_B = new Array(NK), TMP_C = new Array(NK), TMP_M = new Array(NK);
+  var F5 = [0, 0, 0, 0, 0], G5 = [0, 0, 0, 0, 0];
+
+  // keyframe table rows: [u, x, y, z, toe, yaw]
+  function kf(u, tab, out) {
+    var n = tab.length, i, j, a, b, t;
+    if (u <= tab[0][0]) { for (j = 1; j < 6; j++) out[j - 1] = tab[0][j]; return out; }
+    for (i = 0; i < n - 1; i++) {
+      if (u <= tab[i + 1][0]) {
+        a = tab[i]; b = tab[i + 1];
+        t = sstep((u - a[0]) / (b[0] - a[0]));
+        for (j = 1; j < 6; j++) out[j - 1] = a[j] + (b[j] - a[j]) * t;
+        return out;
+      }
+    }
+    for (j = 1; j < 6; j++) out[j - 1] = tab[n - 1][j];
+    return out;
+  }
+  function setFoot(o, side, f, zs) {
+    if (side === 'l') { o[K.lx] = f[0]; o[K.ly] = f[1]; o[K.lz] = f[2] * zs; o[K.lt] = f[3]; o[K.lo] = f[4] * zs; }
+    else { o[K.rx] = f[0]; o[K.ry] = f[1]; o[K.rz] = f[2] * zs; o[K.rt] = f[3]; o[K.ro] = f[4] * zs; }
+  }
+
+  // forward stroking. First half: glide on R, push with L. Second half mirrored.
+  var STROKE_FREE = [[0, 1, 0, 3.5, 0, 0.1], [0.3, -7, 0, 16, 0, 0.55], [0.55, -22, 6, 9, 0.5, 0.35],
+    [0.92, 2, 2.5, 3.5, 0.05, 0.1], [1, 1, 0, 3.5, 0, 0.1]];
+  var STROKE_SUP = [[0, 1, 0, -3.5, 0, -0.1], [0.5, 1, 0, -1.5, 0, -0.1], [1, 1, 0, -3.5, 0, -0.1]];
+  function strokeGen(ph, out) {
+    var half = ph < 0.5 ? 0 : 1, u = (ph - half * 0.5) * 2, s = half ? -1 : 1;
+    kf(u, STROKE_FREE, F5); kf(u, STROKE_SUP, G5);
+    copyP(out, P_STAND);
+    var push = Math.sin(PI * clamp(u / 0.45, 0, 1));
+    out[K.py] = 50.2 - 2.6 * push; out[K.sp] = 0.24 + 0.04 * push;
+    out[K.sr] = -s * 0.03 * push; out[K.tw] = s * 0.06 * Math.sin(PI * u);
+    var sw = Math.sin(PI * u) * 3.5;
+    out[K.ax] = 5 - s * sw; out[K.ay] = -9; out[K.az] = 24;
+    out[K.bx] = 5 + s * sw; out[K.by] = -9; out[K.bz] = -24;
+    out[K.hp] = 0;
+    if (s > 0) { setFoot(out, 'l', F5, 1); setFoot(out, 'r', G5, 1); }
+    else { setFoot(out, 'r', F5, -1); setFoot(out, 'l', G5, -1); }
+    return out;
+  }
+
+  // forward crossovers turning left (CCW). First half: on R, L under-pushes. Second: on L, R crosses over.
+  var CROSS_R = [[0, 2, 0, 4.5, 0, 0], [0.5, 0, 0, 1, 0, 0], [0.66, -4, 0, -13, 0, -0.4], [0.76, -5, 6, -10, 0.4, -0.2],
+    [0.92, 6, 5, 3, 0.3, 0.1], [1, 2, 0, 4.5, 0, 0]];
+  var CROSS_L = [[0, 0, 0, 1, 0, 0], [0.18, -3, 0, -12, 0, 0.1], [0.28, -6, 5, -8, 0.4, 0.1], [0.42, 1, 3, 5, 0.1, 0.05],
+    [0.5, 1, 0, 4.5, 0, 0], [1, 0, 0, 1, 0, 0]];
+  function crossCCW(ph, out) {
+    kf(ph, CROSS_L, F5); kf(ph, CROSS_R, G5);
+    copyP(out, P_STAND);
+    var u = (ph * 2) % 1, push = Math.sin(PI * clamp(u / 0.4, 0, 1));
+    out[K.py] = 49 - 2 * push; out[K.sp] = 0.22; out[K.tw] = 0.28; out[K.hy] = 0.25; out[K.hp] = 0;
+    out[K.ax] = -8; out[K.ay] = -9; out[K.az] = 22; out[K.bx] = 12; out[K.by] = -9; out[K.bz] = -15;
+    setFoot(out, 'l', F5, 1); setFoot(out, 'r', G5, 1);
+    return out;
+  }
+  function crossGen(ph, dir, out) {
+    if (dir > 0) return crossCCW(ph, out);
+    crossCCW((ph + 0.5) % 1, TMP_M);
+    return mirrorP(TMP_M, out);
+  }
+
+  // back crossovers, travelling CCW while facing backwards (inside = skater's right)
+  var BX_L = [[0, 2, 0, -4.5, 0, 0], [0.5, 0, 0, -1, 0, 0], [0.66, 6, 0, 12, 0, 0.35], [0.76, 5, 5, 9, 0.3, 0.2],
+    [0.92, 5, 4, -3, 0.2, 0], [1, 2, 0, -4.5, 0, 0]];
+  var BX_R = [[0, 0, 0, -1, 0, 0], [0.18, 3, 0, 12, 0, -0.1], [0.28, 2, 5, 8, 0.3, 0], [0.42, -1, 3, -5, 0.1, 0],
+    [0.5, -1, 0, -4.5, 0, 0], [1, 0, 0, -1, 0, 0]];
+  function backCrossCCW(ph, out) {
+    kf(ph, BX_L, F5); kf(ph, BX_R, G5);
+    copyP(out, P_STAND);
+    var u = (ph * 2) % 1, push = Math.sin(PI * clamp(u / 0.4, 0, 1));
+    out[K.py] = 48.5 - 2 * push; out[K.sp] = 0.17; out[K.tw] = -0.32; out[K.hy] = -0.75; out[K.hp] = 0;
+    out[K.ax] = 9; out[K.ay] = -8; out[K.az] = 22; out[K.bx] = -9; out[K.by] = -8; out[K.bz] = -21;
+    setFoot(out, 'l', F5, 1); setFoot(out, 'r', G5, 1);
+    return out;
+  }
+  function backCrossGen(ph, dir, out) {
+    if (dir > 0) return backCrossCCW(ph, out);
+    backCrossCCW((ph + 0.5) % 1, TMP_M);
+    return mirrorP(TMP_M, out);
+  }
+  // backward swizzles (lemon drops), both blades on the ice. Everything is a smooth function of the
+  // cycle (no wrap-around jump): the toes turn in while the feet slide apart and out while they close.
+  function swizzleGen(ph, out) {
+    var u = (ph * 2) % 1, w = 0.5 - 0.5 * Math.cos(TAU * u), toe = 0.35 * Math.sin(TAU * u);
+    copyP(out, P_STAND);
+    out[K.py] = 49.5 - 3 * w; out[K.sp] = 0.14; out[K.hy] = -0.45; out[K.tw] = -0.12;
+    out[K.lx] = 1 - 3 * w; out[K.ly] = 0; out[K.lz] = 3.5 + 6 * w; out[K.lo] = -toe; out[K.lt] = 0;
+    out[K.rx] = 1 - 3 * w; out[K.ry] = 0; out[K.rz] = -(3.5 + 6 * w); out[K.ro] = toe; out[K.rt] = 0;
+    out[K.ax] = 5; out[K.ay] = -8; out[K.az] = 24; out[K.bx] = 5; out[K.by] = -8; out[K.bz] = -24;
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ overlays */
+  function wobble(out, t, amp, ph) {
+    out[K.ay] += amp * 7 * Math.sin(t * 9.1 + ph[0]);
+    out[K.by] += amp * 7 * Math.sin(t * 10.3 + ph[1]);
+    out[K.az] += amp * 4 * Math.sin(t * 6.7 + ph[2]);
+    out[K.bz] -= amp * 4 * Math.sin(t * 7.9 + ph[3]);
+    out[K.ax] += amp * 4 * Math.sin(t * 5.3 + ph[4]);
+    out[K.bx] += amp * 4 * Math.sin(t * 5.9 + ph[5]);
+    out[K.sr] += amp * 0.07 * Math.sin(t * 4.1 + ph[6]);
+    out[K.roll] += amp * 0.045 * Math.sin(t * 3.3 + ph[7]);
+    out[K.py] += amp * 1.4 * Math.sin(t * 5.1 + ph[10]);
+    out[K.hp] += amp * 0.06 * Math.sin(t * 4.3 + ph[11]);
+  }
+  function freeFootWobble(out, t, amp, ph, side) {
+    if (side === 'r') { out[K.ry] += amp * 2.5 * Math.sin(t * 4.6 + ph[8]); out[K.rx] += amp * 3 * Math.sin(t * 3.7 + ph[9]); }
+    else { out[K.ly] += amp * 2.5 * Math.sin(t * 4.6 + ph[8]); out[K.lx] += amp * 3 * Math.sin(t * 3.7 + ph[9]); }
+  }
+  function windmill(out, t, amt) {
+    var w = t * 13;
+    out[K.ax] = lerp(out[K.ax], 3 + 13 * Math.cos(w), amt); out[K.ay] = lerp(out[K.ay], 4 + 14 * Math.sin(w), amt); out[K.az] = lerp(out[K.az], 15, amt);
+    out[K.bx] = lerp(out[K.bx], 3 + 13 * Math.cos(w + 0.9), amt); out[K.by] = lerp(out[K.by], 4 + 14 * Math.sin(w + 0.9), amt); out[K.bz] = lerp(out[K.bz], -15, amt);
+  }
+
+  /* ------------------------------------------------------------------ outfits */
+  var LOOKS = [
+    { cut: 'dress', hair: 'bun', skin: '#f2cbae', hairC: '#3b2420', top: '#6c3fc8', sleeve: '#a88be4', skirt: '#7b4ad8',
+      hem: '#dcc2ff', legs: '#eabd9d', brief: '#6c3fc8', acc: '#f3c34e', glow: '196,160,255' },
+    { cut: 'jacket', hair: 'pony', skin: '#e6b08b', hairC: '#e8b85e', top: '#d8364b', sleeve: '#d8364b', legs: '#2b2458',
+      brief: '#2b2458', trim: '#fff2e2', acc: '#fff2e2', glow: '255,128,138' },
+    { cut: 'top', hair: 'short', skin: '#a9714f', hairC: '#1d1525', top: '#159fb0', sleeve: '#159fb0', legs: '#25347a',
+      brief: '#25347a', trim: '#dfe7f4', acc: '#dfe7f4', glow: '110,228,255' },
+    { cut: 'dress', hair: 'pony', skin: '#f6d8c2', hairC: '#9e3b25', top: '#ef8a2e', sleeve: '#ffd29e', skirt: '#f39a35',
+      hem: '#ffe08a', legs: '#efc8ac', brief: '#ef8a2e', acc: '#ffe08a', glow: '255,196,112' },
+    { cut: 'dress', hair: 'bun', skin: '#7d4c35', hairC: '#1c1320', top: '#f5f1ff', sleeve: '#cdc6ec', skirt: '#ffffff',
+      hem: '#e6c264', legs: '#83533a', brief: '#f5f1ff', acc: '#e6c264', glow: '255,238,196' }
+  ];
+  var BOOT = '#faf8fd', BOOT_FAR = '#e2ddef', BOOT_EDGE = '#9a92c4', SOLE = '#cfc9e3', BLADE = '#c9d1e0', BLADE_FAR = '#aab2c6';
+
+  /* ------------------------------------------------------------------ part shapes (local units) */
+  var THIGH_D = 'M0,-3.7C.3,-3.95 .65,-2.9 1,-2.3L1,2.3C.65,2.9 .3,3.95 0,3.7Z';
+  var SHIN_D = 'M0,-2.3C.22,-2.75 .5,-2.25 1,-1.7L1,1.7C.5,2.25 .22,2.75 0,2.3Z';
+  var UARM_D = 'M0,-1.85L1,-1.4L1,1.4L0,1.85Z';
+  var FARM_D = 'M0,-1.4C.35,-1.5 .7,-1.2 1,-1.05L1,1.05C.7,1.2 .35,1.5 0,1.4Z';
+  var NECK_D = 'M0,-1.75L1,-1.55L1,1.55L0,1.75Z';
+  var HAND_D = 'M-.4,-1.2C1.2,-1.5 3.3,-1.35 4.6,-.45C5.1,0 4.9,.7 4.3,.9C3,1.35 1.2,1.4 -.4,1.15Z';
+  var BOOT_D = 'M-3.3,-4.6L2.5,-4.6L2.9,-1.2C3.6,.6 6.2,1.6 8,2.8C9.2,3.6 9.3,5.6 8.6,6.1L-3.6,6.1C-4.1,4 -3.9,0 -3.3,-4.6Z';
+  var SOLE_D = 'M-3.6,6.1L8.6,6.1L8.4,6.9L-3.4,6.9Z';
+  var BLADE_D = 'M-2.6,6.8L-1.4,6.8L-1.6,7.7L-2.4,7.7ZM5.6,6.8L6.8,6.8L6.6,7.7L5.8,7.7Z' +
+    'M-4.6,7.6C-1,7.6 5,7.6 8.4,7.6C9.5,7.6 10.2,8.1 10,8.7L9.3,8.55L9.5,9.05L8.7,8.85C6,9.2 0,9.2 -4.2,8.7C-4.8,8.6 -4.9,7.8 -4.6,7.6Z';
+  var TORSO_D = {
+    dress: 'M0,-30.8C3,-30.8 6,-30.2 8.6,-29.2C10.8,-28.4 11,-26 10.2,-23.6C9.3,-20.8 8.2,-18 7.4,-15.4C6.6,-12.8 5.4,-11.4 5.3,-9.6' +
+      'C5.3,-6 6.8,-3 7,0L7,2L-7,2L-7,0C-6.8,-3 -5.3,-6 -5.3,-9.6C-5.4,-11.4 -6.6,-12.8 -7.4,-15.4C-8.2,-18 -9.3,-20.8 -10.2,-23.6' +
+      'C-11,-26 -10.8,-28.4 -8.6,-29.2C-6,-30.2 -3,-30.8 0,-30.8Z',
+    jacket: 'M0,-30.8C3,-30.8 6.2,-30.2 8.8,-29.2C11,-28.4 11.3,-26 10.6,-23.6C9.8,-20.8 8.8,-18 8,-15.4C7.2,-12.8 6.2,-11 6.1,-8.8' +
+      'C6.2,-4 7.6,0 7.9,5L-7.9,5C-7.6,0 -6.2,-4 -6.1,-8.8C-6.2,-11 -7.2,-12.8 -8,-15.4C-8.8,-18 -9.8,-20.8 -10.6,-23.6' +
+      'C-11.3,-26 -11,-28.4 -8.8,-29.2C-6.2,-30.2 -3,-30.8 0,-30.8Z',
+    top: 'M0,-30.9C3.4,-30.9 7,-30.3 9.8,-29.3C12,-28.5 12.2,-25.8 11.4,-23.2C10.6,-20.4 9.6,-17.6 8.6,-15C7.6,-12.4 6.6,-10.6 6.5,-8.6' +
+      'C6.5,-5 6.9,-2 6.9,0L6.9,2.2L-6.9,2.2L-6.9,0C-6.9,-2 -6.5,-5 -6.5,-8.6C-6.6,-10.6 -7.6,-12.4 -8.6,-15C-9.6,-17.6 -10.6,-20.4 -11.4,-23.2' +
+      'C-12.2,-25.8 -12,-28.5 -9.8,-29.3C-7,-30.3 -3.4,-30.9 0,-30.9Z'
+  };
+  var NECKLINE_D = 'M-3.3,-30.5C-2.3,-27.6 -1.1,-26.3 0,-25.9C1.1,-26.3 2.3,-27.6 3.3,-30.5C1.2,-31 -1.2,-31 -3.3,-30.5Z';
+  var SPARKLE_D = 'M-2.6,-22.5a.6,.6 0 1,0 1.2,0a.6,.6 0 1,0 -1.2,0M1.6,-20.2a.5,.5 0 1,0 1,0a.5,.5 0 1,0 -1,0' +
+    'M-.5,-17.4a.45,.45 0 1,0 .9,0a.45,.45 0 1,0 -.9,0M2.9,-25.2a.4,.4 0 1,0 .8,0a.4,.4 0 1,0 -.8,0Z';
+  var BELT_D = 'M-5.6,-10.7L5.6,-10.7L5.5,-8.9L-5.5,-8.9Z';
+  var ZIP_D = 'M-.38,-29.4L.38,-29.4L.38,5L-.38,5Z';
+  var COLLAR_D = 'M-3.9,-31.2L3.9,-31.2L3.5,-28.8L-3.5,-28.8Z';
+  var JHEM_D = 'M-7.9,3.4L7.9,3.4L7.9,5L-7.9,5Z';
+  var SASH_D = 'M-9.4,-27.4L-7.2,-28.8L8.2,-13.6L6.6,-12.2Z';
+  var JLOW_D = 'M-6.1,-6C-6.2,-4 -7.4,0 -7.9,5L7.9,5C7.4,0 6.2,-4 6.1,-6Z';
+  var TLOW_D = 'M-6.5,-6C-6.6,-4 -6.9,-2 -6.9,0L-6.9,2.2L6.9,2.2L6.9,0C6.9,-2 6.6,-4 6.5,-6Z';
+  var ZIPLOW_D = 'M-.38,-6.2L.38,-6.2L.38,5L-.38,5Z';
+  var PELVIS_D = 'M-7.2,-3C-2.4,-3.6 2.4,-3.6 7.2,-3C7.9,0 7.8,2.6 6.8,4.6C3,6.6 -3,6.6 -6.8,4.6C-7.8,2.6 -7.9,0 -7.2,-3Z';
+  var SKIRT_D = 'M-6.2,-4C-2,-4.4 2,-4.4 6.2,-4C8.5,1 10.5,6.5 11.2,10.6Q0,13.8 -11.2,10.6C-10.5,6.5 -8.5,1 -6.2,-4Z';
+  var HEM_D = 'M-11.2,10.6Q0,13.8 11.2,10.6L10.9,9.1Q0,12.2 -10.9,9.1Z';
+  var TAIL_D = 'M0,-1.9C2.5,-2.4 6,-2 9,-.6C10.6,.2 11.6,1.2 11.8,2C10,1.8 8,1.7 6,1.6C3.8,1.6 1.6,1.8 0,1.9Z';
+
+  /* ------------------------------------------------------------------ 3D math */
+  function ik2(A, T, l1, l2, pole, outJ, outE) {
+    var dx = T[0] - A[0], dy = T[1] - A[1], dz = T[2] - A[2];
+    var d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d < 1e-6) { dx = 0; dy = -1; dz = 0; d = 1e-6; }
+    var nx = dx / d, ny = dy / d, nz = dz / d;
+    var dc = clamp(d, Math.abs(l1 - l2) + 0.05, l1 + l2 - 0.02);
+    var a = (l1 * l1 - l2 * l2 + dc * dc) / (2 * dc);
+    var h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+    var px = pole[0], py = pole[1], pz = pole[2];
+    var dot = px * nx + py * ny + pz * nz;
+    px -= dot * nx; py -= dot * ny; pz -= dot * nz;
+    var pl = Math.sqrt(px * px + py * py + pz * pz);
+    if (pl < 1e-5) { px = -ny; py = nx; pz = 0; pl = Math.sqrt(px * px + py * py) || 1; }
+    px /= pl; py /= pl; pz /= pl;
+    outJ[0] = A[0] + nx * a + px * h; outJ[1] = A[1] + ny * a + py * h; outJ[2] = A[2] + nz * a + pz * h;
+    outE[0] = A[0] + nx * dc; outE[1] = A[1] + ny * dc; outE[2] = A[2] + nz * dc;
+  }
+  function V() { return [0, 0, 0]; }
+  // the lowest points of a boot and its blade (boot units: x towards the toe, y down from the ankle)
+  var BOOT_LOW = [[-4.6, 8.75], [-2, 9.1], [2, 9.15], [6, 9.1], [8.7, 8.9], [10, 8.7], [-3.6, 6.1], [-3.3, -4.6], [2.5, -4.6]];
+  // How far an ankle at (x, y, z) must rise so no part of the boot or blade dips below the ice, for a foot pitched
+  // by lt (toe down) and turned by lo, in a body leaning by bp / roll, lifted by lift (0 on the ice).
+  function bootSink(x, y, z, lt, lo, sb, cb, sr, cr, lift) {
+    var cl = Math.cos(lt), sl = Math.sin(lt), co = Math.cos(lo), so = Math.sin(lo), low = 1e9;
+    for (var i = 0; i < BOOT_LOW.length; i++) {
+      var bx = BOOT_LOW[i][0], by = BOOT_LOW[i][1];
+      var px = x + bx * cl * co - by * sl * co, py = y - bx * sl - by * cl, pz = z + bx * cl * so - by * sl * so;
+      var h = -pz * sr + (-px * sb + py * cb) * cr + lift;
+      if (h < low) low = h;
+    }
+    return low < -0.15 ? -low / Math.max(0.5, cb * cr) : 0;
+  }
+
+  /* ------------------------------------------------------------------ projection / ice */
+  function makeProj(ice) {
+    ice = ice || {};
+    var poly = (ice.icePolygon && ice.icePolygon.length >= 3) ? ice.icePolygon : [[420, 560], [1180, 560], [1360, 960], [240, 960]];
+    var hF = +ice.skaterHeightFar || 64, hN = +ice.skaterHeightNear || 200;
+    var minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, i;
+    for (i = 0; i < poly.length; i++) {
+      minx = Math.min(minx, poly[i][0]); maxx = Math.max(maxx, poly[i][0]);
+      miny = Math.min(miny, poly[i][1]); maxy = Math.max(maxy, poly[i][1]);
+    }
+    var yN = ice.nearY != null ? +ice.nearY : maxy;
+    var yF = ice.farY != null ? +ice.farY : (ice.horizonY != null ? +ice.horizonY : miny);
+    var cx = (minx + maxx) / 2;
+    var slope = (hN - hF) / Math.max(1, yN - yF);
+    var P = { hN: hN, cx: cx, yN: yN, persp: false, yv: 0, H: 1, D: 1, _nx: 0, _nz: 0, _ei: 0 };
+    if (slope > 0.02 && hF > 4) {
+      P.persp = true; P.yv = yF - hF / slope; P.H = yN - P.yv; P.D = P.H / 0.36;
+    }
+    P.toW = function (x, y) {
+      if (P.persp) { var p = Math.max(0.05, (y - P.yv) / P.H); return [(x - cx) / p, P.D / p]; }
+      return [x - cx, (y - yN) / 0.36];
+    };
+    P.toS = function (wx, wz, out) {
+      out = out || [0, 0, 0];
+      if (P.persp) { var p = P.D / Math.max(P.D * 0.05, wz); out[0] = cx + wx * p; out[1] = P.yv + P.H * p; out[2] = p; }
+      else { out[0] = cx + wx; out[1] = yN + wz * 0.36; out[2] = 1; }
+      return out;
+    };
+    P.kD = function (p) { return P.persp ? (P.H / P.D) * p : 0.36; };
+    var W = [];
+    for (i = 0; i < poly.length; i++) W.push(P.toW(poly[i][0], poly[i][1]));
+    var E = [];
+    var bx0 = 1e18, bx1 = -1e18, bz0 = 1e18, bz1 = -1e18;
+    for (i = 0; i < W.length; i++) {
+      var a = W[i], b = W[(i + 1) % W.length];
+      var dx = b[0] - a[0], dz = b[1] - a[1], l2 = dx * dx + dz * dz || 1e-9, l = Math.sqrt(l2);
+      E.push({ ax: a[0], az: a[1], bx: b[0], bz: b[1], dx: dx, dz: dz, len2: l2, nx: -dz / l, nz: dx / l });
+      bx0 = Math.min(bx0, a[0]); bx1 = Math.max(bx1, a[0]); bz0 = Math.min(bz0, a[1]); bz1 = Math.max(bz1, a[1]);
+    }
+    P.edges = E; P.W = W; P.bx0 = bx0; P.bx1 = bx1; P.bz0 = bz0; P.bz1 = bz1;
+    var area = 0;
+    for (i = 0; i < W.length; i++) { var w0 = W[i], w1 = W[(i + 1) % W.length]; area += w0[0] * w1[1] - w1[0] * w0[1]; }
+    P.area = Math.abs(area) / 2 / (hN * hN);   // in skater-heights squared
+    P.size = Math.sqrt((bx1 - bx0) * (bx1 - bx0) + (bz1 - bz0) * (bz1 - bz0)) || 1;
+    // orient normals inward
+    var e0 = E[0], mx = e0.ax + e0.dx * 0.5 + e0.nx * 1e-3 * P.size, mz = e0.az + e0.dz * 0.5 + e0.nz * 1e-3 * P.size;
+    if (sdist(P, mx, mz) < 0) for (i = 0; i < E.length; i++) { E[i].nx = -E[i].nx; E[i].nz = -E[i].nz; }
+    // preferred depth band, chosen in screen terms: the middle of the ice on screen,
+    // where skaters are large enough to read but not cut off by the bottom edge
+    var yTop = miny, yBot = Math.min(maxy, yN);
+    P.zA = P.toW(cx, lerp(yTop, yBot, 0.82))[1];   // nearest preferred
+    P.zB = P.toW(cx, lerp(yTop, yBot, 0.3))[1];    // farthest preferred
+    P.zC = P.zB;
+    // narrow (phone) ice: the far limit of a band that leans to the near half, where the figures read largest,
+    // and the start of the far third (no more than two skaters should drift up there at once)
+    P.zN = P.toW(cx, lerp(yTop, yBot, 0.36))[1];
+    P.zF3 = P.toW(cx, lerp(yTop, yBot, 0.34))[1];
+    var zMid = P.toW(cx, lerp(yTop, yBot, 0.58))[1];
+    // width of the ice (in heights) across the middle of the band
+    var wm = 0, xs;
+    for (xs = 0; xs <= 40; xs++) { var xx = lerp(bx0, bx1, xs / 40); if (sdist(P, xx, zMid) > 0) wm += (bx1 - bx0) / 40; }
+    P.midWidth = wm / hN;
+    // open-space points
+    var best = -1e18, bestH = -1e18, gx, gz, d, n = 24;
+    P.pole = [(bx0 + bx1) / 2, (bz0 + bz1) / 2]; P.home = P.pole.slice();
+    for (gx = 0; gx <= n; gx++) for (gz = 0; gz <= n; gz++) {
+      var x = lerp(bx0, bx1, gx / n), z = lerp(bz0, bz1, gz / n);
+      d = sdist(P, x, z);
+      if (d > best) { best = d; P.pole = [x, z]; }
+      var dh = Math.min(d, hN * 2.5) - Math.abs(z - zMid) * 0.6 - Math.abs(x) * 0.08;
+      if (d > 0 && dh > bestH) { bestH = dh; P.home = [x, z]; }
+    }
+    return P;
+  }
+  function sdist(P, x, z) {
+    var E = P.edges, best = 1e30, inside = false, bi = 0, i, e, t, px, pz, d;
+    for (i = 0; i < E.length; i++) {
+      e = E[i];
+      if (((e.az > z) !== (e.bz > z)) && (x < (e.bx - e.ax) * (z - e.az) / (e.bz - e.az) + e.ax)) inside = !inside;
+      t = ((x - e.ax) * e.dx + (z - e.az) * e.dz) / e.len2;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      px = e.ax + e.dx * t - x; pz = e.az + e.dz * t - z;
+      d = px * px + pz * pz;
+      if (d < best) { best = d; bi = i; P._nx = px; P._nz = pz; }
+    }
+    P._ei = bi;
+    return inside ? Math.sqrt(best) : -Math.sqrt(best);
+  }
+  function aniso(dx, dz) { return Math.sqrt(dx * dx + 0.2 * dz * dz); }
+
+  /* ================================================================== the rink */
+  function createSkaterRink(opts) {
+    opts = opts || {};
+    var layer = opts.layer, reflLayer = opts.reflLayer;
+    var count = opts.count == null ? 4 : Math.max(0, Math.min(32, opts.count | 0));
+    var seed = opts.seed == null ? 1 : (+opts.seed || 0);
+    var reduce = !!opts.reduceMotion;
+    var uid = 'skr' + (++RINK_ID) + '-' + Math.floor(Math.random() * 1e6).toString(36);
+    var rng = mulberry(Math.floor(seed * 9301) + 49297);
+    var pj = null, sks = [], crowd = 1, kMax = 0.95, narrow = false;
+    function useProj(P) {
+      pj = P;
+      var per = pj.area / Math.max(1, count);
+      crowd = clamp(28 / Math.max(1, per), 1, 2.6);
+      kMax = Math.min(1.5, 0.95 * Math.sqrt(crowd));
+      narrow = pj.midWidth < 4.2;
+      if (per < 18 || narrow) {   // little room: use all of the near ice, not only the middle band (on phones not the far shore either)
+        pj.zA = pj.bz0; pj.zB = narrow ? Math.min(pj.bz1, pj.zN) : pj.bz1;
+      }
+    }
+    useProj(makeProj(opts.ice));
+    var simT = 0, lastNow = null, frameN = 0;
+    // adaptive budget: if step() keeps costing more than ~3 ms (a slow phone), the faint reflection
+    // refreshes at 10 Hz and steering re-plans every fourth frame until it is cheap again
+    var cost = 0, lite = 0, liteLock = null;
+    var clock = (root.performance && performance.now) ? function () { return performance.now(); } : function () { return Date.now(); };
+    var tmpS = [0, 0, 0];
+
+    initSvgDom(layer);
+    var defs = el('defs', null, layer);
+    var clip = el('clipPath', { id: uid + 'h' }, defs);
+    el('ellipse', { rx: 5.2, ry: 5.95 }, clip);
+
+    /* ---------------------------------------------------------------- DOM */
+    function buildFig(look, parent, refl, i) {
+      // all fields declared up front (same object shapes for every figure)
+      var F = { root: null, shadow: null, hit: null, fig: null, legL: null, legR: null, armL: null, armR: null,
+        body: null, hips: null, head: null, pony: null, parts: null, anim: null, frontS: null, rootS: null, cur: null };
+      F.root = el('g', refl ? { 'class': 'skater-refl' } : { 'class': 'skater', 'data-skater': String(i) }, parent);
+      if (!refl) {
+        F.shadow = el('ellipse', { rx: 1, ry: 1, fill: '#150b35', opacity: 0.3 }, F.root);
+        F.hit = el('rect', { x: -22, y: -106, width: 44, height: 110, fill: 'transparent' }, F.root);
+      }
+      F.fig = el('g', null, F.root);
+      function leg() {
+        var g = el('g', null, F.fig), o = { g: g, far: null, thigh: null, knee: null, shin: null, boot: null, bootB: null, blade: null };
+        o.thigh = el('path', { d: THIGH_D }, g);
+        if (!refl) o.knee = el('circle', { r: 2.3 }, g);   // joint discs are skipped in the faint reflection
+        o.shin = el('path', { d: SHIN_D }, g);
+        o.boot = el('g', null, g);
+        o.bootB = el('path', { d: BOOT_D, fill: BOOT, stroke: BOOT_EDGE, 'stroke-width': 0.45, 'stroke-linejoin': 'round' }, o.boot);
+        el('path', { d: SOLE_D, fill: SOLE }, o.boot);
+        o.blade = el('path', { d: BLADE_D, fill: BLADE }, o.boot);
+        return o;
+      }
+      function arm() {
+        var g = el('g', null, F.fig), o = { g: g, far: null, sh: null, up: null, elb: null, fo: null, hand: null };
+        if (!refl) o.sh = el('circle', { r: 2.0 }, g);
+        o.up = el('path', { d: UARM_D }, g);
+        if (!refl) o.elb = el('circle', { r: 1.42 }, g);
+        o.fo = el('path', { d: FARM_D }, g);
+        if (!refl) o.hand = el('path', { d: HAND_D }, g);
+        return o;
+      }
+      F.legL = leg(); F.legR = leg(); F.armL = arm(); F.armR = arm();
+      var b = { g: el('g', null, F.fig), pelvis: null, torso: null, front: null, neck: null };
+      if (!refl) b.pelvis = el('path', { d: PELVIS_D, fill: look.brief }, b.g);   // hidden by the skirt / jacket in the faint reflection
+      b.torso = el('g', null, b.g);
+      el('path', { d: TORSO_D[look.cut], fill: look.top, stroke: shade(look.top, 0.25), 'stroke-width': 0.35 }, b.torso);
+      if (look.cut === 'dress') el('path', { d: BELT_D, fill: look.acc }, b.torso);
+      if (look.cut === 'jacket') { el('path', { d: JHEM_D, fill: shade(look.top, 0.18) }, b.torso); el('path', { d: COLLAR_D, fill: shade(look.top, 0.2) }, b.torso); }
+      if (!refl) b.front = el('g', null, b.torso);
+      if (refl) { /* the faint reflection skips chest details */ }
+      else if (look.cut === 'dress') { el('path', { d: NECKLINE_D, fill: look.skin }, b.front); el('path', { d: SPARKLE_D, fill: look.acc }, b.front); }
+      else if (look.cut === 'jacket') el('path', { d: ZIP_D, fill: look.trim }, b.front);
+      else if (look.cut === 'top') { el('path', { d: SASH_D, fill: look.trim }, b.front); el('path', { d: NECKLINE_D, fill: look.skin, transform: 'translate(0,-.4) scale(.8,.55)' }, b.front); }
+      b.neck = el('path', { d: NECK_D, fill: look.skin }, b.g);
+      F.body = b;
+      // hips: drawn above the legs so a thigh never covers the skirt / jacket hem
+      var hp = { g: el('g', null, F.fig), skirt: null, band: null, zip: null };
+      if (look.skirt) {
+        hp.skirt = el('g', null, hp.g);
+        el('path', { d: SKIRT_D, fill: look.skirt, stroke: shade(look.skirt, 0.25), 'stroke-width': 0.35 }, hp.skirt);
+        el('path', { d: HEM_D, fill: look.hem }, hp.skirt);
+      } else {
+        hp.band = el('g', null, hp.g);
+        el('path', { d: look.cut === 'jacket' ? JLOW_D : TLOW_D, fill: look.top }, hp.band);
+        if (look.cut === 'jacket') { el('path', { d: JHEM_D, fill: shade(look.top, 0.18) }, hp.band); if (!refl) hp.zip = el('path', { d: ZIPLOW_D, fill: look.trim }, hp.band); }
+      }
+      F.hips = hp;
+      var h = { g: el('g', null, F.fig), bunFront: false, bun: null, shape: null, fg: null, face: null };
+      if (look.hair === 'bun' && !refl) {
+        h.bun = el('g', null, h.g);
+        el('circle', { r: 2.75, fill: look.hairC }, h.bun);
+        el('ellipse', { cx: 0, cy: 2.0, rx: 2.1, ry: 0.85, fill: look.acc }, h.bun);
+      }
+      h.shape = el('ellipse', { rx: 5.2, ry: 5.95, fill: look.hairC }, h.g);
+      h.fg = el('g', { 'clip-path': 'url(#' + uid + 'h)' }, h.g);
+      h.face = el('ellipse', { rx: 4.5, ry: look.hair === 'short' ? 5.4 : 5.0, fill: look.skin }, h.fg);
+      F.head = h;
+      F.parts = [F.legL, F.legR, F.armL, F.armR, b, h, hp];
+      if (look.hair === 'pony') {
+        var p = { g: el('g', null, F.fig), t: null };
+        p.t = el('g', null, p.g);
+        el('path', { d: TAIL_D, fill: look.hairC }, p.t);
+        el('circle', { r: 1.35, fill: look.acc }, p.t);
+        F.pony = p; F.parts.push(p);
+      }
+      // animated elements, written each frame through slots (the reflection has fewer)
+      var A = F.anim = [];
+      function add(e, key, trOnly) { if (e) A.push(slot(e, TI[key], trOnly)); }
+      add(F.legL.thigh, 'thighL'); add(F.legL.knee, 'kneeL', true); add(F.legL.shin, 'shinL'); add(F.legL.boot, 'bootL');
+      add(F.legR.thigh, 'thighR'); add(F.legR.knee, 'kneeR', true); add(F.legR.shin, 'shinR'); add(F.legR.boot, 'bootR');
+      add(F.armL.sh, 'shL', true); add(F.armL.up, 'upL'); add(F.armL.elb, 'elbL', true); add(F.armL.fo, 'foL'); add(F.armL.hand, 'handL');
+      add(F.armR.sh, 'shR', true); add(F.armR.up, 'upR'); add(F.armR.elb, 'elbR', true); add(F.armR.fo, 'foR'); add(F.armR.hand, 'handR');
+      add(b.pelvis, 'pelvis'); add(b.torso, 'torso'); add(b.neck, 'neck'); add(hp.skirt, 'skirt'); add(hp.band, 'torso');
+      add(h.g, 'head'); add(h.face, 'face'); add(h.bun, 'bun', true); add(F.pony && F.pony.t, 'pony');
+      add(F.shadow, 'shadow'); add(F.hit, 'hit', true);
+      F.frontS = b.front ? slot(b.front, TI.front) : null;
+      F.rootS = slot(F.root, -1);
+      // current DOM order of F.parts inside F.fig (creation order: legs, arms, body, hips, head, pony)
+      F.cur = F.pony ? [0, 1, 2, 3, 4, 6, 5, 7] : [0, 1, 2, 3, 4, 6, 5];
+      return F;
+    }
+    function setLimbFill(F, look, which, far) {
+      var o = F[which];
+      if (o.far === far) return;
+      o.far = far;
+      if (which === 'legL' || which === 'legR') {
+        var c = far ? shade(look.legs, 0.2) : look.legs;
+        o.thigh.setAttribute('fill', c); if (o.knee) o.knee.setAttribute('fill', c); o.shin.setAttribute('fill', c);
+        o.bootB.setAttribute('fill', far ? BOOT_FAR : BOOT); o.blade.setAttribute('fill', far ? BLADE_FAR : BLADE);
+      } else {
+        var s = far ? shade(look.sleeve, 0.2) : look.sleeve, k = far ? shade(look.skin, 0.18) : look.skin;
+        if (o.sh) { o.sh.setAttribute('fill', s); o.elb.setAttribute('fill', s); }
+        o.up.setAttribute('fill', s); o.fo.setAttribute('fill', s);
+        if (o.hand) o.hand.setAttribute('fill', k);
+      }
+    }
+
+    /* ---------------------------------------------------------------- skater objects */
+    function makeSkater(i) {
+      var r = mulberry(Math.floor(seed * 7919) + i * 104729 + 13);
+      var look = LOOKS[i % LOOKS.length];
+      var sk = { i: i, r: r, look: look };
+      sk.skill = 0.25 + 0.55 * r(); sk.nerves = r(); sk.vC0 = 0.74 + 0.18 * r(); sk.wob = 0.6 + 0.6 * (1 - sk.skill);
+      sk.vC = sk.vC0 / Math.sqrt(crowd);
+      sk.ph = []; for (var k = 0; k < 12; k++) sk.ph.push(r() * TAU);
+      sk.wf = [0.04 + 0.05 * r(), 0.09 + 0.08 * r(), r() * TAU, r() * TAU];
+      sk.P = copyP(new Array(NK), P_STAND); sk.from = copyP(new Array(NK), P_STAND); sk.tgt = new Array(NK);
+      sk.cr = { ph: r(), wL: 0, wR: 0, wG: 0, glide: 0, glideReq: 0, strokes: 3 + Math.floor(r() * 4), lastHalf: 0, gSide: 0 };
+      sk.wx = 0; sk.wz = 0; sk.th = 0; sk.v = 0; sk.kH = 0; sk.kT = 0; sk.vx = 0; sk.vz = 0; sk.vTarget = 0; sk.vScale = 1;
+      sk.yawOff = 0; sk.yaw0 = 0; sk.yawT = NaN; sk.lift = 0; sk.prevPhi = NaN; sk.yawRate = 0; sk.tailA = PI / 2;
+      sk.queue = []; sk.seg = null; sk.segT = 0; sk.cool = 6; sk.hist = []; sk.attempts = 0; sk.chk = 0;
+      sk.kE = 0.25; sk.kL = 0.2; sk.under = 0; sk.busy = false; sk.longHold = false; sk.trig = false; sk.forced = null;
+      sk.onIce = true; sk.scrape = false; sk.frozen = null;
+      sk.J = {}; sk.bbox = [0, 0, 0, 0]; sk.blade = { x: 0, y: 0, onIce: true, scrape: false, color: look.glow, al: NaN, lt: 0 };
+      // every field the simulation touches later, declared up front (stable object shape = fast, no deopts)
+      sk.T = makeT(); sk._keys = [0, 0, 0, 0, 0, 0, 0, 0]; sk.lbox = [0, 0, 0, 0]; sk.pred = [];
+      sk._bladeB = [0, 0]; sk._bsL = 1; sk._bsR = 1; sk._supR = false; sk._dt = 0.016;
+      sk.aborts = 0; sk.goal = null; sk.goalT = 0; sk.inAttempt = false; sk.outcome = ''; sk.pendingForce = null; sk.pinT = 0; sk.storyPick = ''; sk.setT = 0;
+      sk.ready = false; sk.sx = 0; sk.sy = 0; sk.sc = 1; sk.steerDt = 0; sk.steerSeg = null; sk.tapAt = 99; sk.vCommit = 0;
+      sk._lean = 0;   // curve lean currently added on top of the blended pose (kept out of the blend snapshot)
+      sk.m = buildFig(look, layer, false, i);
+      sk.rf = buildFig(look, reflLayer, true, i);
+      return sk;
+    }
+
+    /* ---------------------------------------------------------------- segments */
+    // every segment has the same fields in the same order, so the per-frame code stays monomorphic
+    function Seg(name, dur) {
+      this.name = name; this.dur = dur; this.blend = 0.25; this.kap = 'steer'; this.onIce = true; this.acc = 0.5;
+      this.pose = null; this.vT = null; this.tick = null; this.start = null; this.end = null;
+      this.yawTo = null; this.yawA = 0; this.yawB = 1; this.yawE = ''; this.lift = null;
+      this.kk = ''; this.pv = 1; this.plan = false; this.goal = false; this.back = false; this.bias = 0; this.scrape = false;
+    }
+    function seg(name, dur, o) {
+      var g = new Seg(name, dur);
+      if (o) for (var k in o) if (o.hasOwnProperty(k) && o[k] != null) g[k] = o[k];
+      return g;
+    }
+    function staticPose(P) { return function (sk, u, t, dt, out) { copyP(out, P); }; }
+    function turnBy(delta) { return function (sk) { return sk.yawOff + delta; }; }
+    function facingFwd(sk) { return Math.cos(sk.yawOff) > 0; }
+
+    function cruiseGen(sk, dt, out, back) {
+      var c = sk.cr, kH = sk.kH, a = Math.min(1, dt * 2.2);
+      var tL = clamp((kH - 0.3) / 0.22, 0, 1), tR = clamp((-kH - 0.3) / 0.22, 0, 1);
+      c.wL += (tL - c.wL) * a; c.wR += (tR - c.wR) * a;
+      var rate = 0.5 + 0.28 * clamp(sk.v / sk.vC, 0, 1.4);
+      var u = (c.ph * 2) % 1, half = c.ph < 0.5 ? 0 : 1;
+      if (half !== c.lastHalf) {
+        c.lastHalf = half; c.strokes--;
+        if (c.strokes <= 0 && !back && c.wL + c.wR < 0.2) { c.glideReq = 0.9 + sk.r() * 1.3; c.strokes = 3 + Math.floor(sk.r() * 5); }
+      }
+      if (c.glideReq > 0 && u >= 0.44 && u < 0.52) { c.glide = c.glideReq; c.glideReq = 0; c.gSide = half; }
+      if (c.glide > 0) { c.glide -= dt; if (c.wL + c.wR > 0.3) c.glide = 0; }
+      c.wG += ((c.glide > 0 ? 1 : 0) - c.wG) * Math.min(1, dt * 3);
+      if (!(c.glide > 0)) c.ph = (c.ph + rate * dt) % 1;
+      if (back) {
+        swizzleGen(c.ph, out);
+        if (c.wL > 0.01) { backCrossGen(c.ph, 1, TMP_B); mixP(out, out, TMP_B, c.wL); }
+        if (c.wR > 0.01) { backCrossGen(c.ph, -1, TMP_B); mixP(out, out, TMP_B, c.wR); }
+      } else {
+        strokeGen(c.ph, out);
+        if (c.wL > 0.01) { crossGen(c.ph, 1, TMP_B); mixP(out, out, TMP_B, c.wL); }
+        if (c.wR > 0.01) { crossGen(c.ph, -1, TMP_B); mixP(out, out, TMP_B, c.wR); }
+        // the glide keeps the side it started on while it fades out, even after the stroke has switched feet
+        if (c.wG > 0.01) { mixP(out, out, c.gSide === 0 ? P_GLIDE_R : P_GLIDE_L, c.wG * 0.85); }
+      }
+      return out;
+    }
+    function segCruise(dur, back) {
+      return seg(back ? 'cruiseBack' : 'cruise', dur, {
+        blend: 0.45, acc: 0.35, back: !!back,
+        vT: function (s) { return back ? s.vC * 0.85 : s.vC; },
+        pose: function (s, u, t, dt, out) { cruiseGen(s, dt, out, back); },
+        tick: function (s, dt) { s.cool -= dt; if (s.trig || s.forced) s.segT = s.seg.dur; }
+      });
+    }
+    function segTurnFB() {
+      return seg('turnFB', 0.62, { blend: 0.22, yawTo: turnBy(PI), yawA: 0.12, yawB: 0.55, pose: staticPose(P_THREE) });
+    }
+    function segTurnBF() {
+      return seg('turnBF', 0.6, { blend: 0.25, yawTo: function (s) { var d = wrap(0 - s.yawOff); if (Math.abs(d) < 0.05) d = 0; return s.yawOff + d; },
+        yawA: 0.1, yawB: 0.5, pose: staticPose(P_MOHAWK), acc: 0.3 });
+    }
+    function segBackX(minT, maxT, trig) {
+      return seg('backX', maxT, {
+        blend: 0.4, acc: 0.45, bias: 0.34, goal: true, back: true, asked: !!trig,
+        vT: function (s) { return s.vC * 1.12; },
+        pose: function (s, u, t, dt, out) { cruiseGen(s, dt, out, true); },
+        tick: function (s, dt) {
+          if (s.segT < minT) return;
+          s.chk -= dt;
+          if (s.chk > 0) return;
+          s.chk = 0.18;
+          // on narrow ice (phones), after a couple of seconds also accept a path that runs closer to the edge; a jump a
+          // visitor asked for takes that sooner, and in the end any path that stays on the ice (so it comes quickly)
+          // the visit's very first try (desktop) also takes, almost at once, any path that keeps off the boards and clear of
+          // the others even if it is not side-on or has a skater near it on screen (the others make room once it commits)
+          var asked = trig || s.trig, first = story.n === 0 && !narrow;
+          if (planOK(s) || ((narrow || asked) && s.segT > minT + (asked ? 0.8 : 2) && planOK(s, false, true)) ||
+              (first && s.segT > minT + 0.3 && planOK(s, false, true, true)) ||
+              (asked && s.segT > minT + 1.8 && planOK(s, true))) { s.ready = true; s.segT = s.seg.dur; }
+        },
+        end: function (s) {
+          // asked = this set-up was built for a visitor's click, or someone clicked the skater during it
+          var asked = trig || s.trig;
+          if (s.ready || (asked && planOK(s, true))) { s.trig = false; return; }
+          // the visit's very first try: keep circling backwards a while longer rather than give up (people are waiting)
+          if (story.n === 0 && !asked && (s.setT += s.segT) < 10) { s.queue.unshift(segBackX(0, 1.5, false)); return; }
+          s.setT = 0;
+          storyReturn(s);   // called off: the next skater to set off gets this part of the story instead
+          if (asked) { s.queue = []; s.trig = true; s.cool = 0; return; }   // no room yet: set up again straight away
+          s.aborts++;
+          s.queue = [segTurnBF()]; s.cool = 1.5 + 2 * s.r(); s.inAttempt = false;
+          if (s.pendingForce) { s.forced = s.pendingForce; s.pendingForce = null; s.hist.pop(); }
+        },
+        start: function (s) { s.ready = false; s.chk = 0; }
+      });
+    }
+    function segStep() {
+      return seg('step', 0.45, { blend: 0.38, kap: 'plan', kk: 'kE', pv: 1, plan: true,
+        yawTo: turnBy(-PI), yawA: 0.05, yawB: 0.85, pose: staticPose(P_LFO), acc: 0.2,
+        start: function (s) {
+          s.busy = true; s.pendingForce = null; s.vCommit = Math.max(0.7, s.v); s.vTarget = s.vCommit * 0.97;
+          // committed to the jump (set-ups can still be abandoned before this): count it for the rink
+          story.n++;
+          story[s.outcome] = true;   // which kinds of try the rink has shown so far
+          story.last2 = story.lastO; story.lastO = s.outcome;
+          s.storyPick = '';
+          story.miss = (s.outcome === 'clean' || s.outcome === 'waltz') ? 0 : story.miss + 1;
+        } });
+    }
+    function segEdge(hold) {
+      return seg('edge', hold, { blend: 0.22, kap: 'plan', kk: 'kE', pv: hold > 1.5 ? 0.78 : 0.93, plan: true, acc: hold > 1.5 ? 0.14 : 0.08,
+        vT: function (s) { return s.vCommit * (s.longHold ? 0.68 : 0.88); },
+        start: function (s) { s.tapAt = s.longHold ? 0.6 + s.r() * Math.max(0.2, s.seg.dur - 1.4) : 99; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_LFO);
+          var amp = s.wob * (s.longHold ? (0.35 + 0.75 * Math.min(1, t / 1.5)) : 0.2);
+          wobble(out, simT, amp, s.ph);
+          freeFootWobble(out, simT, amp, s.ph, 'r');
+          out[K.ry] = Math.max(out[K.ry], 16);   // however wobbly, the free boot stays well off the ice
+          if (s.longHold) {
+            // a nervous moment: the free toe dabs the ice for a split second and the arms flap
+            var tap = Math.min(1, 1.6 * Math.sin(clamp((t - s.tapAt) / 0.45, 0, 1) * PI));
+            out[K.ry] = lerp(out[K.ry], 3.5, tap); out[K.rx] = lerp(out[K.rx], -10, tap); out[K.rt] = lerp(out[K.rt], 0.55, tap);
+            out[K.ay] += 9 * tap * Math.sin(simT * 15); out[K.by] -= 9 * tap * Math.sin(simT * 15 + 0.7);
+            out[K.py] -= 2 * tap;
+          }
+        } });
+    }
+    function segLoad() {
+      return seg('load', 0.3, { blend: 0.28, kap: 'plan', kk: 'kE', pv: 0.88, plan: true, pose: staticPose(P_LOAD) });
+    }
+    function segTakeoff() {
+      return seg('takeoff', 0.16, { blend: 0.15, kap: 'plan', kk: 'kE', pv: 0.88, plan: true,
+        yawTo: turnBy(0.35), yawA: 0.3, yawB: 1, yawE: 'in', pose: staticPose(P_TAKEOFF) });
+    }
+    function segAir(kind, T, H) {
+      var rot = kind === 'waltz' ? PI : 3 * PI;
+      return seg('air', T, { blend: 0.1, kap: 'hold', pv: 0.88, plan: true, onIce: false, acc: 0,
+        yawTo: function (s) { return rot - s.under; }, yawE: 'rot',
+        lift: function (u) { return H * 4 * u * (1 - u); },
+        pose: function (s, u, t, dt, out) {
+          if (kind === 'waltz') { mixP(out, P_WALTZ_AIR, P_AIR_OPEN, sstep((u - 0.55) / 0.45)); return; }
+          if (u < 0.7) copyP(out, P_AIR);
+          else mixP(out, P_AIR, P_AIR_OPEN, sstep((u - 0.7) / 0.3));
+        },
+        end: function (s) { s.attempts++; } });
+    }
+    function segLand() {
+      return seg('land', 0.32, { blend: 0.07, kap: 'plan', kk: 'kL', pv: 0.8, plan: true, acc: 0.6,
+        yawTo: function (s) { return s.yawOff + s.under; }, yawA: 0, yawB: 0.6,
+        vT: function (s) { return s.v * 0.85; }, pose: staticPose(P_LAND) });
+    }
+    function segHold(d) {
+      return seg('hold', d, { blend: 0.55, kap: 'plan', kk: 'kL', pv: 0.7, plan: true, acc: 0.15,
+        vT: function (s) { return s.v * 0.8; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_HOLD);
+          wobble(out, simT, s.wob * 0.12 * (1 - u), s.ph);
+        },
+        end: function (s) { s.busy = false; } });
+    }
+    function segProud() {
+      return seg('proud', 1.1, { blend: 0.32, acc: 0.25, vT: function (s) { return s.v * 0.8; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_PROUD);
+          var down = sstep((u - 0.62) / 0.38);
+          out[K.py] += 1.2 * Math.sin(u * PI * 3) * (1 - down);
+          mixP(out, out, P_TWO, down * 0.8);
+        } });
+    }
+    function segShrug(d) {
+      return seg('shrug', d || 1.0, { blend: 0.35, acc: 0.25, vT: function (s) { return s.v * 0.8; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_SHRUG);
+          out[K.hy] += 0.32 * Math.sin(t * 13) * (1 - sstep((u - 0.5) / 0.5));
+        },
+        end: function (s) { s.busy = false; } });
+    }
+    function segBail1() {
+      return seg('bail', 0.45, { blend: 0.35, kap: 'plan', kk: 'kE', pv: 0.8, plan: true, acc: 0.4,
+        vT: function (s) { return s.v * 0.8; }, pose: staticPose(P_BAIL) });
+    }
+    function segLand2() {
+      return seg('land2', 0.45, { blend: 0.06, kap: 'plan', kk: 'kL', pv: 0.55, plan: true, acc: 1.2,
+        yawTo: function (s) { return s.yawOff + s.under; }, yawA: 0, yawB: 0.95, yawE: 'out',
+        vT: function (s) { return s.v * 0.55; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_TWO_LAND);
+          windmill(out, simT, sstep(u / 0.3));
+          out[K.sr] += 0.1 * Math.sin(simT * 7); out[K.roll] += 0.05 * Math.sin(simT * 5.3);
+        } });
+    }
+    function segSteady() {
+      return seg('steady', 1.0, { blend: 0.3, kap: 'steer', acc: 0.4, vT: function (s) { return s.v * 0.8; },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_STEADY);
+          windmill(out, simT, 0.7 * (1 - sstep(u / 0.6)));
+          wobble(out, simT, 1.1 * (1 - u), s.ph);
+        },
+        end: function (s) { s.busy = false; } });
+    }
+    function segExhale() {
+      return seg('exhale', 0.7, { blend: 0.4, acc: 0.3, vT: function (s) { return s.v * 0.85; }, pose: staticPose(P_EXHALE) });
+    }
+    function segSlip() {
+      return seg('slip', 0.32, { blend: 0.09, kap: 'hold', acc: 0.4, plan: true, pv: 0.7,
+        yawTo: turnBy(0.35), yawA: 0, yawB: 1,
+        vT: function (s) { return s.v * 0.85; },
+        pose: function (s, u, t, dt, out) { copyP(out, P_SLIP); windmill(out, simT, 0.5); } });
+    }
+    function segSlide() {
+      return seg('slide', 0.8, { blend: 0.2, kap: 'hold', onIce: false, scrape: true, plan: true, pv: 0.35,
+        yawTo: turnBy(0.6), yawA: 0, yawB: 1, yawE: 'out',
+        vT: 0, start: function (s) { s.seg.acc = Math.max(0.3, s.v / 0.7); },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_SLIDE);
+          out[K.bx] += 6 * Math.sin(simT * 9) * (1 - u); out[K.by] += 5 * Math.sin(simT * 11) * (1 - u);
+        } });
+    }
+    function segSit(d) {
+      return seg('sit', d, { blend: 0.4, kap: 'none', onIce: false, vT: 0, acc: 2,
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_SIT);
+          out[K.hp] += 0.07 * Math.sin(t * 8) * (1 - u); out[K.hy] += 0.25 * Math.sin(t * 3.1) * u;
+          out[K.sr] += 0.05 * Math.sin(t * 6);
+        } });
+    }
+    // roll over onto hands and knees: the turn happens early and low (hips near the ice), so the
+    // figure never pops up tall mid-turn; turn the way that ends closest to a side view, which reads best.
+    // The turn eases in from rest (a seated skater never whips round at full speed in one frame).
+    function segKneel() {
+      return seg('kneel', 0.95, { blend: 0.75, kap: 'none', onIce: false, vT: 0, yawA: 0, yawB: 0.5, yawE: '',
+        yawTo: function (s) {
+          var ph = s.th + s.yawOff, a = 2.5;
+          return s.yawOff + (Math.abs(Math.cos(ph + a)) >= Math.abs(Math.cos(ph - a)) ? a : -a);
+        },
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_KNEEL);
+          var up = sstep((u - 0.3) / 0.5);
+          out[K.py] = lerp(9, P_KNEEL[K.py], up);
+          out[K.sp] = lerp(0.6, P_KNEEL[K.sp], up);
+          // the boots stay nearly flat while the hips are low, and only point their toe picks into the ice as the
+          // skater comes up onto the knees (toe-down boots under low hips would have to dig into the ice)
+          out[K.lt] = lerp(0.15, P_KNEEL[K.lt], up); out[K.rt] = lerp(0.15, P_KNEEL[K.rt], up);
+        } });
+    }
+    function segLunge() {
+      return seg('lunge', 0.6, { blend: 0.5, kap: 'none', onIce: false, vT: 0, pose: staticPose(P_LUNGE) });
+    }
+    function segRise() {
+      return seg('rise', 0.65, { blend: 0.6, kap: 'none', onIce: true, vT: 0, pose: staticPose(P_RISE),
+        end: function (s) { s.th = s.th + s.yawOff; s.yawOff = 0; s.yaw0 = 0; s.kH = 0; s.kT = 0; } });
+    }
+    function segBrush() {
+      return seg('brush', 1.1, { blend: 0.35, kap: 'none', vT: 0,
+        pose: function (s, u, t, dt, out) {
+          copyP(out, P_BRUSH);
+          var w = t * 15;
+          out[K.ax] += 4 * Math.sin(w); out[K.ay] += 5 * Math.sin(w + 1);
+          out[K.bx] += 4 * Math.sin(w + PI); out[K.by] += 5 * Math.sin(w + PI + 1);
+          if (u > 0.75) mixP(out, out, P_STAND, sstep((u - 0.75) / 0.25) * 0.6);
+        },
+        end: function (s) { s.busy = false; } });
+    }
+
+    // across the whole rink: how many committed attempts so far, whether one of them was a clean axel yet, and
+    // how many in a row ended without a landing (so visitors see a success early on, and now and then after);
+    // also which other kinds of try have shown yet, so a pop, a fall and a bail all turn up in about the first minute
+    var story = { n: 0, miss: 0, clean: false, twoFoot: false, waltz: false, fall: false, bail: false, k: 0, back: [], lastO: '', last2: '' };
+    // the first minute's story, once the first clean axel is in: a fall, a clean landing, a pop (a single turn),
+    // a bail, then another clean landing (kinds the rink has already shown are skipped). Each one is handed out when
+    // a skater sets off to try it, so two skaters setting up at once never both get the same miss, and handed back
+    // if that set-up is called off. After that the tries are left to chance (pickOutcome).
+    var STORY = ['fall', 'clean', 'waltz', 'bail', 'clean'];
+    function storyPick(sk, trig) {
+      if (!story.clean) return '';
+      while (!story.back.length && story.k < STORY.length && STORY[story.k] !== 'clean' && story[STORY[story.k]]) story.k++;
+      var o = story.back.length ? story.back[story.back.length - 1] : (story.k < STORY.length ? STORY[story.k] : '');
+      if (!o || (trig && o === 'bail')) return '';   // a visitor asked for a jump: never a bail
+      if (story.back.length) story.back.pop(); else story.k++;
+      sk.storyPick = o;
+      return o;
+    }
+    function storyReturn(sk) {
+      if (sk.storyPick) { story.back.push(sk.storyPick); sk.storyPick = ''; }
+    }
+    function pickOutcome(sk, trig) {
+      var s = sk.skill;
+      var w = { clean: 0.14 + 0.36 * s, twoFoot: 0.2, fall: 0.24 - 0.1 * s, waltz: 0.16, bail: 0.15 };
+      if (trig) w.clean += 0.4;
+      if (narrow) w.bail *= 0.7;            // one jumper at a time on a phone: keep the slot mostly for real jumps
+      if (story.miss >= 3) w.clean *= 2;    // after three misses in a row, a landing gets more likely
+      var last = sk.hist[sk.hist.length - 1], prev = sk.hist[sk.hist.length - 2];
+      if (last) w[last] *= 0.4;
+      if (last && last === prev) w[last] = 0;
+      // and across the rink: a miss the last jumper just had is less likely (never three of the same in a row), and one
+      // that a skater setting up right now is about to try is out, so the misses stay varied whoever takes the next turn
+      if (story.lastO && story.lastO !== 'clean') w[story.lastO] *= story.lastO === story.last2 ? 0 : 0.35;
+      for (var oi = 0; oi < sks.length; oi++) { var ot = sks[oi]; if (ot !== sk && ot.inAttempt && !ot.busy && ot.outcome !== 'clean' && w[ot.outcome]) w[ot.outcome] = 0; }
+      if (sk.attempts === 0) w.bail = 0.02;
+      // a visitor asked for a jump: always leave the ice (bails still happen in the skaters' own practice)
+      if (trig) w.bail = 0;
+      var tot = 0, k;
+      for (k in w) tot += w[k];
+      var x = sk.r() * tot;
+      for (k in w) { x -= w[k]; if (x <= 0) return k; }
+      return 'clean';
+    }
+    // everything after the set-up: the step forward, the long edge, then the jump (or the bail) and what follows it.
+    // pre(): called between choosing the jump's shape and building its segments (the set-up draws its own length
+    // there, so each skater's random numbers come in the same order as before the set-up was split off)
+    function attemptTail(sk, outcome, longHold, pre) {
+      var r = sk.r, q = [];
+      sk.kE = 1 / (3.3 + 1.5 * r());
+      sk.kL = 1 / (3.8 + 2.2 * r());
+      sk.under = outcome === 'clean' ? 0.05 + 0.1 * r() : (outcome === 'twoFoot' ? 0.9 + 0.45 * r() :
+        (outcome === 'fall' ? 0.75 + 0.5 * r() : 0.08 * r()));
+      sk.longHold = !!longHold;
+      sk.outcome = outcome;
+      var hold = longHold ? 1.8 + 1.6 * r() : 0.5 + 0.35 * r();
+      var airT = outcome === 'waltz' ? 0.44 + 0.06 * r() : 0.6 + 0.08 * r();
+      var airH = outcome === 'waltz' ? 26 + 6 * r() : 41 + 8 * r();
+      if (pre) pre(q);
+      q.push(segStep());
+      q.push(segEdge(hold));
+      if (outcome === 'bail') {
+        q.push(segBail1(), segShrug(1.2));
+      } else {
+        q.push(segLoad(), segTakeoff(), segAir(outcome, airT, airH));
+        if (outcome === 'clean') q.push(segLand(), segHold(1.3 + 0.5 * r()), segProud(), segTurnBF());
+        else if (outcome === 'waltz') q.push(segLand(), segHold(0.8), segShrug(1.0), segTurnBF());
+        else if (outcome === 'twoFoot') q.push(segLand2(), segSteady(), segExhale(), segTurnBF());
+        else q.push(segSlip(), segSlide(), segSit(0.8 + 0.6 * r()), segKneel(), segLunge(), segRise(), segBrush());
+      }
+      return q;
+    }
+    function buildAttempt(sk, outcome, longHold, trig) {
+      var r = sk.r;
+      var q = attemptTail(sk, outcome, longHold, function (q) {
+        if (facingFwd(sk)) q.push(segTurnFB());
+        // (the visit's first try on desktop starts looking for its moment straight away: the opening seconds are crowded)
+        var minT = 1.2 + 1.2 * r();
+        q.push(segBackX(trig ? 0.5 : (story.n === 0 && !narrow ? 0.6 : minT), trig ? 3.5 : 5.5, trig));
+      });
+      sk.hist.push(outcome); if (sk.hist.length > 4) sk.hist.shift();
+      sk.inAttempt = true;
+      var cd = { clean: 7, waltz: 3, bail: 3, twoFoot: 5, fall: 5 };
+      sk.cool = cd[outcome] + 4 * r();
+      return q;
+    }
+    function decideNext(sk) {
+      var r = sk.r;
+      if (sk.forced) {
+        var f = sk.forced; sk.forced = null;
+        sk.queue = buildAttempt(sk, f.outcome, f.longHold, false);
+        sk.pendingForce = f;
+        return;
+      }
+      var busyN = 0;
+      for (var bi = 0; bi < sks.length; bi++) if (sks[bi] !== sk && sks[bi].inAttempt) busyN++;
+      var maxAtt = (narrow || pj.area / Math.max(1, count) < 18) ? 1 : 2;
+      if (sk.trig || (sk.cool <= 0 && busyN < maxAtt)) {
+        var trig = sk.trig; sk.trig = false;
+        // the second jump on the rink is a confident, clean axel unless the first one already was (and the next ones
+        // until one is, if that try was called off), so a visitor sees a landing early on before the wobbles and falls
+        var early = story.n >= 1 && !story.clean;
+        var o = early ? 'clean' : (storyPick(sk, trig) || pickOutcome(sk, trig));
+        var lh = !trig && !early && r() < (o === 'bail' ? 0.55 : 0.18 + 0.32 * sk.nerves);
+        // the very first try of the visit always has the long, wobbly one-foot hold before it (the skater gathering
+        // courage), so the learning shows from the first seconds on
+        if (story.n === 0 && busyN === 0 && !trig) lh = true;
+        sk.queue = buildAttempt(sk, o, lh, trig);
+        return;
+      }
+      sk.inAttempt = false;
+      var q = [], justTurned = sk.seg && sk.seg.name === 'turnBF';
+      if (!facingFwd(sk)) q.push(segTurnBF());
+      else if (!justTurned && r() < 0.16) { q.push(segTurnFB(), segCruise(2.5 + 2 * r(), true), segTurnBF()); }
+      q.push(segCruise(sk.cool <= 0 ? 1 + r() : 2.5 + 3 * r(), false));
+      sk.queue = q;
+    }
+
+    /* ---------------------------------------------------------------- planning & steering */
+    var RADII = [[3.3, 4.0], [4.6, 5.2], [6.5, 7], [2.7, 3.4]];
+    var PF = { wall: 0, head: 0, other: 0, ok: 0 };
+    // lenient: only the boards count; soft: the boards may come closer; loose: other skaters count only if the jumper
+    // would run into them (not for standing in front of the jump on screen), and the take-off need not be side-on
+    function planOK(sk, lenient, soft, loose) {
+      var k0 = sk.kE, l0 = sk.kL, off = Math.floor(sk.r() * RADII.length);
+      for (var ri = 0; ri < RADII.length; ri++) {
+        var rr = RADII[(ri + off) % RADII.length];
+        sk.kE = 1 / rr[0]; sk.kL = 1 / rr[1];
+        if (planTry(sk, lenient, soft, loose)) { PF.ok++; return true; }
+      }
+      sk.kE = k0; sk.kL = l0;
+      return false;
+    }
+    function planTry(sk, lenient, soft, loose) {
+      var x = sk.wx, z = sk.wz, th = sk.th, t = 0, hN = pj.hN, v0 = Math.max(0.7, sk.v);
+      var marg = (lenient || soft ? 0.15 : 0.3) * hN, lastK = sk.kH, i, q, seg_, dd, tt, kk, vv;
+      var showT = 0;   // time at which the load / take-off starts (the part people should see clearly)
+      for (i = 0; i < sk.queue.length; i++) { if (sk.queue[i].name === 'load' || sk.queue[i].name === 'bail') break; showT += sk.queue[i].dur; }
+      for (i = 0; i < sk.queue.length; i++) {
+        q = sk.queue[i];
+        if (!q.plan) break;
+        // in the air the jumper rises up to about half a height: a skater just behind must clear the lifted figure too
+        var air = q.name === 'air';
+        // take off travelling across the view, so the jump reads in profile
+        if (q.name === 'takeoff' && !lenient && !loose && !narrow && Math.abs(Math.cos(th)) < 0.45) { PF.head++; return false; }
+        kk = q.kap === 'plan' ? sk[q.kk] : (q.kap === 'hold' ? lastK : 0);
+        lastK = kk; vv = v0 * (q.pv || 1);
+        var qd = q.name === 'hold' ? Math.min(q.dur, 0.6) : q.dur;
+        for (tt = 0; tt < qd; tt += 0.15) {
+          dd = Math.min(0.15, qd - tt);
+          th += kk * vv * dd;
+          x += Math.cos(th) * vv * hN * dd; z += Math.sin(th) * vv * hN * dd; t += dd;
+          if (sdist(pj, x, z) < marg) { PF.wall++; return false; }
+          if (lenient) continue;
+          var up = air ? 2 * (tt + dd / 2) / qd * (1 - (tt + dd / 2) / qd) + 0.05 : 0;   // 0.05 .. 0.55 heights
+          for (var oi = 0; oi < sks.length; oi++) {
+            var o = sks[oi];
+            if (o === sk) continue;
+            var tp = Math.min(t, 1.5);
+            var ox2 = o.wx + o.vx * tp, oz2 = o.wz + o.vz * tp;
+            if (aniso(x - ox2, z - oz2) < 0.8 * hN) { PF.other++; return false; }
+            if (!loose && t >= showT - 0.3 && t <= showT + 1.6 && visD(x - ox2, z - oz2, (z + oz2) / 2, up) < 0.85) { PF.other++; return false; }
+          }
+        }
+      }
+      return true;
+    }
+    // on-screen overlap measure in skater sizes: < 1 means the two figures overlap on screen. up: how far the first
+    // figure is raised off the ice (in heights; a jumper), which moves it up the screen like a step away from us
+    function visD(dx, dz, wzAvg, up) {
+      var hN = pj.hN, k = pj.kD(pj.persp ? pj.D / Math.max(pj.D * 0.3, wzAvg) : 1);
+      var a = dx / (0.62 * hN), b = k * dz / (1.05 * hN) + (up || 0) / 1.05;
+      return Math.sqrt(a * a + b * b);
+    }
+    // roomiest point of the preferred band, away from other skaters (goal for the axel set-up; on narrow ice
+    // anywhere, since a jump needs the room and the band there leans to the cramped near end)
+    function openSpot(sk) {
+      var hN = pj.hN, best = -1e18, g = null, n = 9, ix, iz;
+      var z0 = narrow ? pj.bz0 : Math.max(pj.bz0, pj.zA), z1 = narrow ? pj.bz1 : Math.min(pj.bz1, pj.zB);
+      for (ix = 0; ix <= n; ix++) for (iz = 0; iz <= n; iz++) {
+        var x = lerp(pj.bx0, pj.bx1, ix / n), z = lerp(z0, z1, iz / n);
+        var e = sdist(pj, x, z) / hN;
+        if (e < 1.0) continue;
+        var md = 3;
+        for (var oi = 0; oi < sks.length; oi++) {
+          var o = sks[oi];
+          if (o === sk) continue;
+          md = Math.min(md, aniso(x - (o.wx + o.vx), z - (o.wz + o.vz)) / hN);
+        }
+        var sc = md + Math.min(e, 2.5) * 0.6 - aniso(x - sk.wx, z - sk.wz) / hN * 0.15;
+        if (sc > best) { best = sc; g = [x, z]; }
+      }
+      return g || pj.home;
+    }
+    // where each skater will be at the steering sample times, following its current arc
+    var PRED_N = 7;
+    function predictAll() {
+      var T = narrow ? 2.2 : 2.8;
+      for (var i = 0; i < sks.length; i++) {
+        var o = sks[i], pr = o.pred || (o.pred = []);
+        var vW = o.v * pj.hN, kw = o.kH / pj.hN;
+        if (o.seg && (o.seg.kap === 'none' || o.seg.name === 'slide')) kw = 0;
+        for (var j = 0; j <= PRED_N; j++) {
+          var t = Math.min(T * j / PRED_N, 1.8), sd = vW * t, x, z;
+          if (Math.abs(kw) < 1e-9) { x = o.wx + Math.cos(o.th) * sd; z = o.wz + Math.sin(o.th) * sd; }
+          else { x = o.wx + (Math.sin(o.th + kw * sd) - Math.sin(o.th)) / kw; z = o.wz - (Math.cos(o.th + kw * sd) - Math.cos(o.th)) / kw; }
+          pr[j] = pr[j] || [0, 0]; pr[j][0] = x; pr[j][1] = z;
+        }
+      }
+    }
+    function steer(sk, dt) {
+      var sg = sk.seg, mode = sg.kap;
+      if (sg.goal) { sk.goalT -= dt; if (sk.goalT <= 0 || !sk.goal) { sk.goal = openSpot(sk); sk.goalT = 0.8; } }
+      if (mode === 'hold') return;
+      if (mode === 'none') { sk.kH = 0; sk.kT = 0; return; }
+      var hN = pj.hN, vW = Math.max(0.4, sk.v) * hN, T = narrow ? 2.2 : 2.8, NSM = 7;
+      var pref, c0, span, nC, wPref, tight = 0;
+      if (mode === 'plan') { c0 = sk[sg.kk]; span = sg.name === 'hold' ? 0.4 : 0.16; nC = sg.name === 'hold' ? 5 : 3; pref = c0; wPref = 2.5; }
+      else {
+        pref = (sg.bias || 0) + 0.3 * Math.sin(simT * sk.wf[0] * TAU + sk.wf[2]) + 0.2 * Math.sin(simT * sk.wf[1] * TAU + sk.wf[3]);
+        c0 = 0; span = kMax; nC = 9; wPref = 0.5;
+        // heading towards nearby boards: allow a much tighter, slower turn (a real skater would pivot)
+        var e0 = sdist(pj, sk.wx, sk.wz) / hN, gl = Math.sqrt(pj._nx * pj._nx + pj._nz * pj._nz) || 1;
+        var outw = e0 > 0 ? (Math.cos(sk.th) * pj._nx + Math.sin(sk.th) * pj._nz) / gl : 1;
+        tight = clamp((1.1 - e0) / 0.8, 0, 1) * clamp((outw + 0.1) / 0.6, 0, 1);
+        // heading into another skater close by: the same tighter turn, to pivot away instead of pushing into them
+        var tO = 0;
+        for (var qi = 0; qi < sks.length; qi++) {
+          var oq = sks[qi]; if (oq === sk) continue;
+          var rxq = oq.wx - sk.wx, rzq = oq.wz - sk.wz, dq = aniso(rxq, rzq) / hN;
+          if (dq < 1.3) tO = Math.max(tO, clamp((1.3 - dq) / 0.6, 0, 1) * clamp(((rxq * Math.cos(sk.th) + rzq * Math.sin(sk.th)) / (Math.sqrt(rxq * rxq + rzq * rzq) || 1) - 0.2) / 0.5, 0, 1));
+        }
+        if (tight > 0 || tO > 0) { span = kMax * (1 + 1.5 * Math.max(tight, tO)); nC = 13; }
+      }
+      // spread out in depth: with two others already up on the far third of the ice, keep away from it too
+      // (otherwise everyone can drift to the back where the ice is roomiest, and line up small along the shore)
+      var ci, j, oi, farN = 0, zF = pj.zF3;
+      if (mode !== 'plan') for (oi = 0; oi < sks.length; oi++) if (sks[oi] !== sk && sks[oi].wz > zF) farN++;
+      var farW = farN >= 2 ? 2.5 : (farN === 1 && narrow ? 0.6 : 0);
+      // phones: the ice is narrow near us, so the band leans hard to the near half and a skater out past it heads back
+      var bandW = narrow ? 1.6 : 0.9;
+      // on-screen clearance (visD) wanted around others, wider around a jump or a fall; desktop keeps more of it,
+      // so one skater rarely stands in front of another there (phones have less room to give)
+      var vR0 = narrow ? 1.3 : 1.5, vRB = narrow ? 1.5 : 1.8, vW0 = narrow ? 6 : 8, vWB = narrow ? 12 : 14, vH = narrow ? 0.95 : 1.0, vHW = narrow ? 18 : 24;
+      // desktop, until the first jump of the visit is under way: the looser spacing of the opening seconds, so the first
+      // skater's set-up finds its open ice and the first try (with its long, wobbly hold) comes within a few seconds
+      var calm = !narrow && story.n === 0;
+      if (calm) { vR0 = vRB = 1.2; vW0 = 4; vWB = 8; vH = 0; farW = 0; }
+      // best: lowest total cost; bestB: the part of it that only says "outside the depth band" (that alone never slows a skater)
+      var best = 1e18, bestK = pref, bestB = 0;
+      for (ci = 0; ci < nC; ci++) {
+        var kc = c0 + span * ((ci / (nC - 1)) * 2 - 1);
+        var cost = wPref * Math.abs(kc - pref) / 0.5 + (mode === 'plan' ? 0 : 0.25 * kc * kc), bandC = 0;
+        var kw = kc / hN, x = sk.wx, z = sk.wz, th = sk.th, px = x, pz = z;
+        for (j = 1; j <= NSM; j++) {
+          var tj = T * j / NSM, s = vW * tj;
+          if (Math.abs(kw) < 1e-9) { px = x + Math.cos(th) * s; pz = z + Math.sin(th) * s; }
+          else { px = x + (Math.sin(th + kw * s) - Math.sin(th)) / kw; pz = z - (Math.cos(th + kw * s) - Math.cos(th)) / kw; }
+          var tw = 1 - 0.5 * (j - 1) / NSM;
+          var e = sdist(pj, px, pz) / hN;
+          if (e < 0) cost += 16 * tw + 6 * (-e);
+          else if (e < 1.0) cost += 5 * (1 - e) * (1 - e) * tw;
+          if (mode !== 'plan' && !(narrow && sg.goal)) {
+            var c1 = cost;
+            if (pz > pj.zB) cost += bandW * (pz - pj.zB) / hN;
+            else if (pz < pj.zA) cost += 0.9 * (pj.zA - pz) / hN;
+            if (farW && pz > zF) cost += farW * Math.min(6, (pz - zF) / hN) * tw;
+            bandC += cost - c1;
+          }
+          for (oi = 0; oi < sks.length; oi++) {
+            var o = sks[oi];
+            if (o === sk) continue;
+            var ox_ = o.pred[j][0], oz_ = o.pred[j][1];
+            var d = aniso(px - ox_, pz - oz_) / hN;
+            // (the opening seconds: everyone gives the skater setting up the visit's first try a wide berth, and that
+            // skater itself only keeps from bumping into anyone, so it can make straight for its open ice)
+            var R = o.busy ? (calm ? 1.75 : 2.1) : (o.inAttempt ? (calm ? 2.8 : 1.7) : 1.4);
+            if (calm && sg.goal) {
+              if (d < 0.95) cost += 40 * (0.95 - d) * tw;
+              if (pz > oz_) { var vs = visD(px - ox_, pz - oz_, (pz + oz_) / 2, 0); if (vs < 1.1) cost += 6 * (1.1 - vs) * tw; }   // nor set up hidden behind a nearer skater
+              continue;
+            }
+            if (d < R) cost += (14 * (1 - d / R) * (1 - d / R) + (d < 0.95 ? 40 * (0.95 - d) : 0)) * tw * (sk.busy ? 0.4 : 1);
+            // keep clear on screen too (one figure standing in front of another), most of all around a jump or a fall:
+            // not just behind a jumper (who rises up the screen) but above all in front of a jump and its landing, hold
+            // and proud pose (a figure standing nearer would hide them)
+            // (the visit's first set-up gets the full clearance on screen even in the opening seconds: its long, wobbly
+            // hold comes right after, and a skater who drifts in front of it now would still be there)
+            var on = o.seg.name, big = calm && o.inAttempt, shown = o.busy || LANDED[on] || big, vd;
+            if ((calm && !big) || !(shown || JUMPING[on])) vd = visD(px - ox_, pz - oz_, (pz + oz_) / 2, 0);
+            else vd = Math.min(visD(px - ox_, pz - oz_, (pz + oz_) / 2, 0.3), JUMPING[on] ? visD(px - ox_, pz - oz_, (pz + oz_) / 2, -0.45) : 1e9);
+            var vR = big ? 1.8 : (shown ? vRB : vR0), vHo = big ? 1.0 : vH;
+            if (vd < vR) cost += ((big ? 14 : (shown ? vWB : vW0)) * (vR - vd) + (vd < vHo ? vHW * (vHo - vd) : 0)) * tw * (sk.busy ? 0.3 : 1);
+          }
+        }
+        // outside the depth band: prefer arcs that end heading back towards it (on phones also count a sideways
+        // heading against it, or a skater out on the roomy far ice drifts along the shore instead of coming back)
+        var thE = th + kw * vW * T, zb = pj.zB - 0.6 * hN, za = pj.zA + 0.6 * hN;
+        if (mode === 'plan' || (narrow && sg.goal)) { /* committed edge (or a set-up on narrow ice): only walls and people matter */ }
+        else if (pz > zb) { c1 = 3 * (narrow ? 1 + Math.sin(thE) : Math.max(0, Math.sin(thE))) * Math.min(2, (pz - zb) / hN); cost += c1; bandC += c1; }
+        else if (pz < za) cost += 3 * Math.max(0, -Math.sin(thE)) * Math.min(2, (za - pz) / hN);
+        // set-up: head for open ice (on phones firmly: the near end is too narrow for a jump, so a set-up must leave it;
+        // firmer still for a jump a visitor asked for, so it does not loop round the near end first; firmly too for the
+        // visit's first try on desktop)
+        if (sg.goal && sk.goal) cost += (narrow || calm ? (sg.asked || sk.trig ? 3.2 : 1.6) : (sg.asked || sk.trig ? 0.6 : 0.35)) * Math.sqrt((px - sk.goal[0]) * (px - sk.goal[0]) + (pz - sk.goal[1]) * (pz - sk.goal[1])) / hN;
+        if (cost < best) { best = cost; bestK = kc; bestB = bandC; }
+      }
+      sk.kT = bestK;
+      // slow down when someone is close ahead
+      var block = 1;
+      for (oi = 0; oi < sks.length; oi++) {
+        var ob = sks[oi];
+        if (ob === sk) continue;
+        var rx = ob.wx - sk.wx, rz = ob.wz - sk.wz;
+        var ahead = rx * Math.cos(sk.th) + rz * Math.sin(sk.th);
+        var dd2 = aniso(rx, rz) / hN;
+        if (ahead > 0 && dd2 < 1.6) block = Math.min(block, 0.45 + 0.55 * (dd2 / 1.6));
+      }
+      // slow down in a crowd or near the boards (not merely for being out of the depth band: that kept skaters
+      // crawling about the far ice, the one place they should leave; nor on the way to a jump a visitor asked for)
+      sk.vScale = Math.min((calm ? best : best - bestB) > 9 && !(sg.goal && (sg.asked || sk.trig)) ? 0.65 : 1, block, 1 - 0.45 * Math.max(tight, tO));
+    }
+
+    /* ---------------------------------------------------------------- simulation */
+    function startSeg(sk, sg) {
+      sk.seg = sg;
+      copyP(sk.from, sk.P);
+      // sk.P includes the curve lean, which update() adds again every frame: blend from the pose without it,
+      // or a leaning skater would snap twice as far over at the start of every segment
+      sk.from[K.roll] -= sk._lean;
+      sk.yawOff = wrap(sk.yawOff);
+      sk.yaw0 = sk.yawOff;
+      sk.yawT = sg.yawTo == null ? NaN : (typeof sg.yawTo === 'function' ? sg.yawTo(sk) : sg.yawTo);
+      if (sg.start) sg.start(sk);
+      if (sg.vT != null) sk.vTarget = typeof sg.vT === 'function' ? sg.vT(sk) : sg.vT;
+    }
+    function nextSeg(sk) {
+      if (!sk.queue.length) decideNext(sk);
+      startSeg(sk, sk.queue.shift());
+    }
+    function yawEase(kind, u) {
+      if (kind === 'rot') return 0.22 * u + 0.78 * sstep(u);
+      if (kind === 'in') return u * u;
+      if (kind === 'out') return 1 - (1 - u) * (1 - u);
+      return sstep(u);
+    }
+    function update(sk, dt) {
+      sk.segT += dt;
+      var sg = sk.seg;
+      if (sg.tick) sg.tick(sk, dt);
+      var guard = 0;
+      while (sk.segT >= sk.seg.dur && guard++ < 8) {
+        var over = sk.segT - sk.seg.dur;
+        if (sk.seg.end) sk.seg.end(sk);
+        nextSeg(sk);
+        sk.segT = Math.min(over, 0.05);
+      }
+      sg = sk.seg;
+      var u = sg.dur > 0 ? clamp(sk.segT / sg.dur, 0, 1) : 1;
+      // speed + curvature + position
+      // steering looks 2-3 s ahead, so re-planning every third frame (staggered across skaters) is plenty
+      sk.steerDt += dt;
+      if (sg !== sk.steerSeg || (frameN + sk.i) % (lite ? 4 : 3) === 0) { steer(sk, sk.steerDt); sk.steerDt = 0; sk.steerSeg = sg; }
+      if (sg.kap !== 'hold') sk.kH += (sk.kT - sk.kH) * Math.min(1, dt * 3.5);
+      var vt = sk.vTarget * (sg.kap === 'steer' ? sk.vScale : 1);
+      sk.v += clamp(vt - sk.v, -sg.acc * dt - 1e-9, sg.acc * dt + 1e-9);
+      if (sk.v < 0) sk.v = 0;
+      sk.th += sk.kH * sk.v * dt;
+      var vw = sk.v * pj.hN;
+      sk.vx = Math.cos(sk.th) * vw; sk.vz = Math.sin(sk.th) * vw;
+      sk.wx += sk.vx * dt; sk.wz += sk.vz * dt;
+      // facing
+      if (sk.yawT === sk.yawT) {   // not NaN
+        var a = sg.yawA || 0, b = sg.yawB || 1;
+        var yu = clamp((u - a) / Math.max(1e-6, b - a), 0, 1);
+        sk.yawOff = sk.yaw0 + (sk.yawT - sk.yaw0) * yawEase(sg.yawE, yu);
+      }
+      // pose
+      sg.pose(sk, u, sk.segT, dt, sk.tgt);
+      var w = sg.blend > 0 ? ease(sk.segT / sg.blend) : 1;
+      mixP(sk.P, sk.from, sk.tgt, w);
+      // lean into curves (eased, so taking off or sitting down never straightens the body in one frame)
+      var lean = clamp(Math.atan(3 * sk.v * sk.v * sk.kH / 5.9), -0.3, 0.3);
+      var leanT = (sg.onIce && sg.kap !== 'none') ? lean * Math.cos(sk.yawOff) : 0;
+      sk._lean += (leanT - sk._lean) * Math.min(1, dt * 9);
+      sk.P[K.roll] += sk._lean;
+      sk.lift = sg.lift ? sg.lift(u) : 0;
+      sk.onIce = sg.onIce; sk.scrape = !!sg.scrape;
+    }
+    // distance from (x,z) to edge E (unsigned)
+    function edgeD(E, x, z) {
+      var t = clamp(((x - E.ax) * E.dx + (z - E.az) * E.dz) / E.len2, 0, 1), px = E.ax + E.dx * t - x, pz = E.az + E.dz * t - z;
+      return Math.sqrt(px * px + pz * pz);
+    }
+    function constrain(dt) {
+      var hN = pj.hN, i, j, m = 0.22 * hN;
+      for (var it = 0; it < 2; it++) {
+        for (i = 0; i < sks.length; i++) {
+          var s = sks[i], e = sdist(pj, s.wx, s.wz);
+          if (it === 0) s.pinT = Math.max(0, s.pinT - dt);
+          if (e < m) {
+            var ei = pj._ei, E = pj.edges[ei], nx = E.nx, nz = E.nz;
+            if (e < 0) { var l = Math.sqrt(pj._nx * pj._nx + pj._nz * pj._nz) || 1; nx = pj._nx / l; nz = pj._nz / l; }
+            s.wx += nx * (m - e); s.wz += nz * (m - e);
+            var cdot = Math.cos(s.th) * nx + Math.sin(s.th) * nz;
+            if (it === 0 && cdot < 0 && dt > 0 && s.seg && s.seg.name !== 'air') {
+              // in a corner (two boards close) or pinned for a while: turn towards the middle of the rink
+              var corner = false;
+              for (var ej = 0; ej < pj.edges.length; ej++) if (ej !== ei && edgeD(pj.edges[ej], s.wx, s.wz) < m + 0.35 * hN) corner = true;
+              s.pinT += 2 * dt;
+              var tgt;
+              if (corner || s.pinT > 0.5) tgt = Math.atan2(pj.home[1] - s.wz, pj.home[0] - s.wx);
+              else {
+                // glide along the boards instead of being shoved sideways, aiming a little inwards
+                var tx = -nz, tz = nx;
+                if (Math.cos(s.th) * tx + Math.sin(s.th) * tz < 0) { tx = -tx; tz = -tz; }
+                tgt = Math.atan2(tz + 0.6 * nz, tx + 0.6 * nx);
+              }
+              var rate = corner || s.pinT > 0.5 ? 3.2 : 2.5;
+              s.th += clamp(wrap(tgt - s.th), -rate * dt, rate * dt);
+            }
+          }
+        }
+        for (i = 0; i < sks.length; i++) for (j = i + 1; j < sks.length; j++) {
+          var A = sks[i], B = sks[j], dx = B.wx - A.wx, dz = B.wz - A.wz, d = Math.sqrt(dx * dx + dz * dz), R = 0.6 * hN;
+          if (d < R) {
+            if (d < 1e-6) { dx = 1; dz = 0; d = 1; }
+            var p = (R - d) / 2 / d;
+            A.wx -= dx * p; A.wz -= dz * p; B.wx += dx * p; B.wz += dz * p;
+          }
+        }
+      }
+    }
+
+    /* ---------------------------------------------------------------- solve + render */
+    var Jv = {}, names = ['pel', 'hipL', 'hipR', 'kneeL', 'kneeR', 'ankL', 'ankR', 'top', 'shL', 'shR', 'elbL', 'elbR',
+      'wrL', 'wrR', 'neckT', 'headC', 'tgt', 'fwd', 'up', 'lef', 'fH', 'upH', 'poleA', 'poleL', 'ponyA'];
+    for (var ni = 0; ni < names.length; ni++) Jv[names[ni]] = V();
+    var S2 = {}; for (ni = 0; ni < names.length; ni++) S2[names[ni]] = [0, 0, 0];
+    var PRJ_NAMES = ['pel', 'hipL', 'hipR', 'kneeL', 'kneeR', 'ankL', 'ankR', 'top', 'shL', 'shR', 'elbL', 'elbR', 'wrL', 'wrR', 'neckT', 'headC', 'ponyA'];
+    var ctx = { cb: 1, sb: 0, cr: 1, sr: 0, cp: 1, sp: 0, lift: 0, k: 0.3 };
+    function prj(v, out) {
+      var x = v[0], y = v[1], z = v[2];
+      var x1 = x * ctx.cb + y * ctx.sb, y1 = -x * ctx.sb + y * ctx.cb;
+      var z2 = z * ctx.cr + y1 * ctx.sr, y2 = -z * ctx.sr + y1 * ctx.cr;
+      var X = x1 * ctx.cp - z2 * ctx.sp, Z = x1 * ctx.sp + z2 * ctx.cp;
+      out[0] = X; out[1] = -(y2 + ctx.lift) - Z * ctx.k; out[2] = Z;
+      return out;
+    }
+    function prjDir(x, y, z, out) {
+      var x1 = x * ctx.cb + y * ctx.sb, y1 = -x * ctx.sb + y * ctx.cb;
+      var z2 = z * ctx.cr + y1 * ctx.sr, y2 = -z * ctx.sr + y1 * ctx.cr;
+      var X = x1 * ctx.cp - z2 * ctx.sp, Z = x1 * ctx.sp + z2 * ctx.cp;
+      out[0] = X; out[1] = -y2 - Z * ctx.k; out[2] = Z;
+      return out;
+    }
+    var D1 = [0, 0, 0], D2 = [0, 0, 0], D3 = [0, 0, 0], RM = [1, 0, 0, 1, 0, 0];
+    var T_KEYS = ['thighL', 'kneeL', 'shinL', 'thighR', 'kneeR', 'shinR', 'bootL', 'bootR', 'shL', 'upL', 'elbL', 'foL',
+      'shR', 'upR', 'elbR', 'foR', 'handL', 'handR', 'pelvis', 'torso', 'front', 'skirt', 'neck', 'head', 'face', 'bun', 'pony',
+      'shadow', 'hit'];
+    var TI = {}; for (ni = 0; ni < T_KEYS.length; ni++) TI[T_KEYS[ni]] = ni;
+    function makeT() {
+      var T = { ord: [], m: [] };
+      for (var i = 0; i < T_KEYS.length; i++) T[T_KEYS[i]] = T.m[i] = [1, 0, 0, 1, 0, 0];
+      return T;
+    }
+    var BB_PTS = ['headC', 'ankL', 'ankR', 'wrL', 'wrR', 'kneeL', 'kneeR', 'pel', 'elbL', 'elbR'], B3 = [0, 0, 0];
+    function limbT(a, b, m) {
+      var dx = b[0] - a[0], dy = b[1] - a[1], l = Math.sqrt(dx * dx + dy * dy), ux = 0, uy = 1;
+      if (l > 1e-4) { ux = dx / l; uy = dy / l; }
+      return m6(m, dx, dy, -uy, ux, a[0], a[1]);
+    }
+    function tr(p, m) { return m6(m, 1, 0, 0, 1, p[0], p[1]); }
+
+    // computes the transform strings for one skater into T
+    function solve(sk, phi, k) {
+      var P = sk.P, J = Jv, S = S2, i;
+      var py = P[K.py];
+      var LL = LEG * 0.999;
+      // ankle heights: a toe-down or heel-down boot is lifted until its blade and toe pick rest on the ice, never in it
+      var sbp = Math.sin(P[K.bp]), cbp = Math.cos(P[K.bp]), srl = Math.sin(P[K.roll]), crl = Math.cos(P[K.roll]);
+      // (but the ankle stays well under the hip line, so a low leg, as when kneeling or sitting, never flips its knee;
+      // and a foot under or behind the hips lifts fully only once the hips are up, so rolling over onto the knees stays one
+      // smooth move; while the hips are still low a foot well behind them may come up a little higher, so its boot never
+      // sinks deep. A foot passing right under the low hips is not lifted: a raised ankle there folds the leg so tight that
+      // the knee would flick over to its other side in a frame or two)
+      var ayL = Math.max(P[K.ly] + ANK, 2.5), ayR = Math.max(P[K.ry] + ANK, 2.5), hipY = py + HIPDY - 2, hipsUp = sstep((py - 9) / 16);
+      var cB = 0.5 - 0.35 * (1 - hipsUp), topL = hipY + (P[K.lx] < 0 ? cB : 0.22) * P[K.lx], topR = hipY + (P[K.rx] < 0 ? cB : 0.22) * P[K.rx];
+      var upL = 1 - clamp((20 - P[K.lx]) / 14, 0, 1) * (1 - Math.max(hipsUp, 0.6 * clamp((-P[K.lx] - 4) / 6, 0, 1)));
+      var upR = 1 - clamp((20 - P[K.rx]) / 14, 0, 1) * (1 - Math.max(hipsUp, 0.6 * clamp((-P[K.rx] - 4) / 6, 0, 1)));
+      ayL = Math.max(ayL, Math.min(ayL + upL * bootSink(P[K.lx], ayL, P[K.lz], P[K.lt], P[K.lo], sbp, cbp, srl, crl, sk.lift), topL));
+      ayR = Math.max(ayR, Math.min(ayR + upR * bootSink(P[K.rx], ayR, P[K.rz], P[K.rt], P[K.ro], sbp, cbp, srl, crl, sk.lift), topR));
+      // keep low (planted) feet reachable: lower the pelvis if needed
+      var fx = P[K.lx], fz = P[K.lz], dh2;
+      if (ayL < 4.5 + ANK) { dh2 = fx * fx + (fz - HIPW) * (fz - HIPW); py = Math.min(py, ayL - HIPDY + Math.sqrt(Math.max(0, LL * LL - dh2))); }
+      fx = P[K.rx]; fz = P[K.rz];
+      if (ayR < 4.5 + ANK) { dh2 = fx * fx + (fz + HIPW) * (fz + HIPW); py = Math.min(py, ayR - HIPDY + Math.sqrt(Math.max(0, LL * LL - dh2))); }
+      var pel = J.pel; pel[0] = 0; pel[1] = py; pel[2] = 0;
+      J.hipL[0] = 0; J.hipL[1] = py + HIPDY; J.hipL[2] = HIPW;
+      J.hipR[0] = 0; J.hipR[1] = py + HIPDY; J.hipR[2] = -HIPW;
+      // torso frame
+      var tw = P[K.tw], ct = Math.cos(tw), st = Math.sin(tw);
+      var fw = J.fwd, up = J.up, lf = J.lef;
+      fw[0] = ct; fw[1] = 0; fw[2] = st; up[0] = 0; up[1] = 1; up[2] = 0; lf[0] = -st; lf[1] = 0; lf[2] = ct;
+      var c = Math.cos(P[K.sp]), s = Math.sin(P[K.sp]), t0, t1, t2;
+      t0 = up[0] * c + fw[0] * s; t1 = up[1] * c + fw[1] * s; t2 = up[2] * c + fw[2] * s;
+      fw[0] = fw[0] * c - up[0] * s; fw[1] = fw[1] * c - up[1] * s; fw[2] = fw[2] * c - up[2] * s;
+      up[0] = t0; up[1] = t1; up[2] = t2;
+      c = Math.cos(P[K.sr]); s = Math.sin(P[K.sr]);
+      t0 = up[0] * c + lf[0] * s; t1 = up[1] * c + lf[1] * s; t2 = up[2] * c + lf[2] * s;
+      lf[0] = lf[0] * c - up[0] * s; lf[1] = lf[1] * c - up[1] * s; lf[2] = lf[2] * c - up[2] * s;
+      up[0] = t0; up[1] = t1; up[2] = t2;
+      var top = J.top;
+      for (i = 0; i < 3; i++) top[i] = pel[i] + up[i] * SPINE;
+      for (i = 0; i < 3; i++) { J.shL[i] = top[i] + up[i] * SHDY + lf[i] * SHW; J.shR[i] = top[i] + up[i] * SHDY - lf[i] * SHW; }
+      // head
+      c = Math.cos(P[K.hp]); s = Math.sin(P[K.hp]);
+      var uh = J.upH; for (i = 0; i < 3; i++) uh[i] = up[i] * c + fw[i] * s;
+      for (i = 0; i < 3; i++) { J.neckT[i] = top[i] + uh[i] * NECK; J.headC[i] = J.neckT[i] + uh[i] * HEADC; }
+      c = Math.cos(P[K.hy]); s = Math.sin(P[K.hy]);
+      var fh = J.fH; for (i = 0; i < 3; i++) fh[i] = (fw[i] * Math.cos(P[K.hp]) - up[i] * Math.sin(P[K.hp])) * c + lf[i] * s;
+      for (i = 0; i < 3; i++) J.ponyA[i] = J.headC[i] - fh[i] * 4.3 + uh[i] * 1.6;
+      // arms
+      var hb = P[K.hb], tg = J.tgt, pole = J.poleA;
+      for (var side = 0; side < 2; side++) {
+        var sh = side ? J.shR : J.shL, sg = side ? -1 : 1;
+        var hx = P[side ? K.bx : K.ax], hy = P[side ? K.by : K.ay], hz = P[side ? K.bz : K.az];
+        for (i = 0; i < 3; i++) tg[i] = (sh[i] + fw[i] * hx + up[i] * hy + lf[i] * hz) * (1 - hb);
+        if (hb > 0) { tg[0] += hx * hb; tg[1] += hy * hb; tg[2] += hz * hb; }
+        for (i = 0; i < 3; i++) pole[i] = -fw[i] * 0.8 - up[i] * 0.35 + lf[i] * 0.55 * sg;
+        ik2(sh, tg, UARM, FARM, pole, side ? J.elbR : J.elbL, side ? J.wrR : J.wrL);
+      }
+      // legs
+      var pl = J.poleL;
+      for (side = 0; side < 2; side++) {
+        var lx = P[side ? K.rx : K.lx], lz = P[side ? K.rz : K.lz], lo = P[side ? K.ro : K.lo];
+        tg[0] = lx; tg[1] = side ? ayR : ayL; tg[2] = lz;
+        pl[0] = Math.cos(lo); pl[1] = 0.25; pl[2] = Math.sin(lo);
+        ik2(side ? J.hipR : J.hipL, tg, THIGH, SHIN, pl, side ? J.kneeR : J.kneeL, side ? J.ankR : J.ankL);
+      }
+      // projection context
+      ctx.cb = Math.cos(P[K.bp]); ctx.sb = Math.sin(P[K.bp]);
+      ctx.cr = Math.cos(P[K.roll]); ctx.sr = Math.sin(P[K.roll]);
+      ctx.cp = Math.cos(phi); ctx.sp = Math.sin(phi);
+      ctx.lift = sk.lift; ctx.k = k;
+      for (i = 0; i < PRJ_NAMES.length; i++) prj(J[PRJ_NAMES[i]], S[PRJ_NAMES[i]]);
+      var T = sk.T || (sk.T = makeT());
+      // legs
+      limbT(S.hipL, S.kneeL, T.thighL); tr(S.kneeL, T.kneeL); limbT(S.kneeL, S.ankL, T.shinL);
+      limbT(S.hipR, S.kneeR, T.thighR); tr(S.kneeR, T.kneeR); limbT(S.kneeR, S.ankR, T.shinR);
+      for (side = 0; side < 2; side++) {
+        var lt = P[side ? K.rt : K.lt], lo2 = P[side ? K.ro : K.lo];
+        var cl = Math.cos(lt), sl = Math.sin(lt), co = Math.cos(lo2), so = Math.sin(lo2);
+        prjDir(cl * co, -sl, cl * so, D1);
+        prjDir(-sl * co, -cl, -sl * so, D2);
+        var fl = Math.sqrt(D1[0] * D1[0] + D1[1] * D1[1]);
+        if (fl < 0.4) {
+          if (fl < 1e-4) { D1[0] = (side ? sk._bsR : sk._bsL) || 1; D1[1] = 0; fl = 1; }
+          D1[0] *= 0.4 / fl; D1[1] *= 0.4 / fl;
+        }
+        if (side) sk._bsR = D1[0] < 0 ? -1 : 1; else sk._bsL = D1[0] < 0 ? -1 : 1;
+        var an = side ? S.ankR : S.ankL;
+        m6(side ? T.bootR : T.bootL, D1[0], D1[1], D2[0], D2[1], an[0], an[1]);
+      }
+      // arms
+      tr(S.shL, T.shL); limbT(S.shL, S.elbL, T.upL); tr(S.elbL, T.elbL); limbT(S.elbL, S.wrL, T.foL);
+      tr(S.shR, T.shR); limbT(S.shR, S.elbR, T.upR); tr(S.elbR, T.elbR); limbT(S.elbR, S.wrR, T.foR);
+      for (side = 0; side < 2; side++) {
+        var e2 = side ? S.elbR : S.elbL, w2 = side ? S.wrR : S.wrL;
+        var dx = w2[0] - e2[0], dy = w2[1] - e2[1], l = Math.sqrt(dx * dx + dy * dy), ux = 0, uy = 1;
+        if (l > 1e-4) { ux = dx / l; uy = dy / l; }
+        var rr = clamp(l / FARM, 0.45, 1);
+        m6(side ? T.handR : T.handL, ux * rr, uy * rr, -uy, ux, w2[0], w2[1]);
+      }
+      // pelvis
+      prjDir(0, -1, 0, D1);
+      prjDir(0, 0, 1, D2);
+      var wfP = Math.sqrt(0.3 + 0.7 * D2[0] * D2[0]);
+      var dl = Math.sqrt(D1[0] * D1[0] + D1[1] * D1[1]) || 1;
+      m6(T.pelvis, D1[1] / dl * wfP, -D1[0] / dl * wfP, D1[0], D1[1], S.pel[0], S.pel[1]);
+      // torso
+      var sx = S.top[0] - S.pel[0], sy = S.top[1] - S.pel[1], sl2 = Math.sqrt(sx * sx + sy * sy), vx, vy;
+      if (sl2 > 3) { vx = sx / sl2; vy = sy / sl2; } else { vx = -D1[0] / dl; vy = -D1[1] / dl; }
+      prjDir(lf[0], lf[1], lf[2], D3);
+      var wfT = Math.sqrt(0.3 + 0.7 * D3[0] * D3[0]);
+      m6(T.torso, -vy * wfT, vx * wfT, -sx / SPINE, -sy / SPINE, S.pel[0], S.pel[1]);
+      // front details only when the chest faces the camera
+      prjDir(fw[0], fw[1], fw[2], D3);
+      var front = clamp(-D3[2] * 1.6 - 0.15, 0, 1);
+      m6(T.front, Math.max(0.001, front), 0, 0, 1, 0, 0);
+      T.frontOn = front > 0.02;
+      // skirt hangs along the thighs
+      if (sk.m.hips.skirt) {
+        var kx = (J.kneeL[0] - J.hipL[0]) + (J.kneeR[0] - J.hipR[0]);
+        var ky = (J.kneeL[1] - J.hipL[1]) + (J.kneeR[1] - J.hipR[1]) - 30;
+        var kz = (J.kneeL[2] - J.hipL[2]) + (J.kneeR[2] - J.hipR[2]);
+        var kl = Math.sqrt(kx * kx + ky * ky + kz * kz) || 1;
+        prjDir(kx / kl, ky / kl, kz / kl, D1);
+        var ql = Math.sqrt(D1[0] * D1[0] + D1[1] * D1[1]);
+        if (ql < 0.35) { D1[0] = D1[0] / (ql || 1) * 0.35; D1[1] = (ql < 1e-4 ? 0.35 : D1[1] / ql * 0.35); ql = 0.35; }
+        var flare = clamp(P[K.fl] + Math.min(1, Math.abs(sk.yawRate) / 14), 0, 1.4);
+        var wS = (0.86 + 0.14 * Math.abs(D2[0])) * (1 + 0.38 * flare), hS = 1 - 0.16 * flare;
+        m6(T.skirt, D1[1] / ql * wS, -D1[0] / ql * wS, D1[0] * hS, D1[1] * hS, S.pel[0], S.pel[1]);
+      }
+      // neck + head
+      D3[0] = S.neckT[0] + (S.headC[0] - S.neckT[0]) * 0.45; D3[1] = S.neckT[1] + (S.headC[1] - S.neckT[1]) * 0.45;
+      limbT(S.top, D3, T.neck);
+      var nx = S.headC[0] - S.neckT[0] * 0.5 - S.top[0] * 0.5, ny = S.headC[1] - S.neckT[1] * 0.5 - S.top[1] * 0.5;
+      var ang = Math.atan2(nx, -ny) * 180 / PI;
+      var cA = Math.cos(ang * PI / 180), sA = Math.sin(ang * PI / 180);
+      m6(T.head, cA, sA, -sA, cA, S.headC[0], S.headC[1]);
+      prjDir(fh[0], fh[1], fh[2], D1);
+      var FX = D1[0], FT = -D1[2];
+      var wface = FT >= 0 ? 0.42 + 0.58 * FT : 0.42 * Math.max(0, 1 + 1.6 * FT);
+      // face offset in screen space, rotated into the (tilted) head frame
+      var off = 3.0 + 3.5 * Math.max(0, -FT), ox = FX * off, oy = D1[1] * off * 0.6;
+      var ar = -ang * PI / 180, ca = Math.cos(ar), sa = Math.sin(ar);
+      var lx_ = ox * ca - oy * sa, ly_ = ox * sa + oy * ca;
+      var faceX = lx_, faceY = ly_ + (sk.look.hair === 'short' ? 0.5 : 1.15);
+      var fa = (Math.abs(lx_) + Math.abs(ly_) > 1e-3) ? Math.atan2(ly_, lx_) * 180 / PI : 0;
+      // translate(face) rotate(fa) scale(w,1) rotate(-fa): squash the face along its offset direction
+      var wf = Math.max(0.001, wface), cF = Math.cos(fa * PI / 180), sF = Math.sin(fa * PI / 180);
+      m6(T.face, wf * cF * cF + sF * sF, (wf - 1) * sF * cF, (wf - 1) * sF * cF, wf * sF * sF + cF * cF, faceX, faceY);
+      m6(T.bun, 1, 0, 0, 1, -FX * 3.3, -4.5 + 0.6 * Math.abs(FT));
+      T.bunFront = FT < -0.25;
+      if (sk.m.pony) {
+        var target = PI / 2 + (0.45 + Math.min(0.9, Math.abs(sk.yawRate) * 0.07)) * FX + ang * PI / 180;
+        if (sk.lift > 2) target -= 0.4 * FX;
+        sk.tailA += (target - sk.tailA) * Math.min(1, sk._dt * 10);
+        m6(T.pony, Math.cos(sk.tailA), Math.sin(sk.tailA), -Math.sin(sk.tailA), Math.cos(sk.tailA), S.ponyA[0], S.ponyA[1]);
+      }
+      // which limbs are on the far side
+      var zl = S.hipL[2] + S.kneeL[2] + S.ankL[2], zr = S.hipR[2] + S.kneeR[2] + S.ankR[2];
+      var al = S.shL[2] + S.elbL[2] + S.wrL[2], ar = S.shR[2] + S.elbR[2] + S.wrR[2];
+      T.legLfar = zl > zr; T.armLfar = al > ar;
+      // draw order: larger key = farther = drawn first
+      var bodyZ = (S.pel[2] + S.top[2]) / 2;
+      var keys = sk._keys || (sk._keys = []);
+      keys[0] = zl / 3 + 12; keys[1] = zr / 3 + 12; keys[2] = al / 3 + 1.5; keys[3] = ar / 3 + 1.5;
+      keys[4] = bodyZ; keys[5] = Math.min(S.headC[2], bodyZ) - 0.6;
+      keys[6] = Math.min(keys[0], keys[1], bodyZ) - 0.05;
+      if (sk.m.pony) keys[7] = S.ponyA[2] + (FT > 0 ? 3 : -3);
+      // farthest first (insertion sort: 7-8 items, no allocation)
+      var ord = T.ord, nk = sk.m.pony ? 8 : 7, j, kv;
+      ord.length = nk;
+      for (i = 0; i < nk; i++) {
+        kv = keys[i];
+        for (j = i - 1; j >= 0 && keys[ord[j]] < kv; j--) ord[j + 1] = ord[j];
+        ord[j + 1] = i;
+      }
+      // bounding box (figure units) for hit testing; shadow
+      var mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9, pt;
+      for (i = 0; i < BB_PTS.length; i++) {
+        pt = S[BB_PTS[i]];
+        if (pt[0] < mnx) mnx = pt[0]; if (pt[0] > mxx) mxx = pt[0];
+        if (pt[1] < mny) mny = pt[1]; if (pt[1] > mxy) mxy = pt[1];
+      }
+      var lb = sk.lbox || (sk.lbox = [0, 0, 0, 0]);
+      lb[0] = mnx - 6; lb[1] = mny - 8; lb[2] = mxx + 6; lb[3] = mxy + 10;
+      var gx = (J.ankL[0] + J.ankR[0] + J.pel[0]) / 3, gz = (J.ankL[2] + J.ankR[2]) / 2;
+      prjDir(gx, 0, gz, D1);
+      var spread = Math.abs(S.ankL[0] - S.ankR[0]);
+      var sitting = py < 20 ? 1 : 0;
+      var rx = (15 + spread * 0.35 + sitting * 8) * (1 - Math.min(0.35, sk.lift / 130));
+      m6(T.shadow, rx, 0, 0, rx * Math.max(0.13, k * 0.95), D1[0], D1[1] + 0.6);
+      T.shadowOp = n2(0.3 * (1 - Math.min(0.6, sk.lift / 70)));
+      m6(T.hit, 1, 0, 0, 1, 0, -sk.lift);
+      // blade on the ice (support foot = lower ankle)
+      var supR = J.ankR[1] < J.ankL[1] - 0.3 ? true : (J.ankL[1] < J.ankR[1] - 0.3 ? false : !!sk._supR);
+      sk._supR = supR;
+      var aj = supR ? J.ankR : J.ankL, lo3 = P[supR ? K.ro : K.lo];
+      sk._bladeB[0] = aj[0] + Math.cos(lo3) * 2; sk._bladeB[1] = aj[2] + Math.sin(lo3) * 2;
+      return T;
+    }
+    function applyFig(F, T, look, main) {
+      var A = F.anim, Tm = T.m, i, j;
+      for (i = 0; i < A.length; i++) setS(A[i], Tm[A[i].i]);
+      var b = F.body, hp = F.hips, h = F.head;
+      if (F.frontS) {
+        if (T.frontOn) setS(F.frontS, T.front);
+        setA(b.front, 'display', T.frontOn ? 'inline' : 'none');
+      }
+      if (hp.zip) setA(hp.zip, 'display', T.frontOn ? 'inline' : 'none');
+      if (h.bun && h.bunFront !== T.bunFront) {
+        h.bunFront = T.bunFront;
+        if (T.bunFront) h.g.appendChild(h.bun); else h.g.insertBefore(h.bun, h.shape);
+      }
+      setLimbFill(F, look, 'legL', T.legLfar); setLimbFill(F, look, 'legR', !T.legLfar);
+      setLimbFill(F, look, 'armL', T.armLfar); setLimbFill(F, look, 'armR', !T.armLfar);
+      // draw order inside the figure: move only the parts that are out of place
+      var cur = F.cur, want = T.ord, n = want.length;
+      for (i = 0; i < n; i++) {
+        if (cur[i] === want[i]) continue;
+        F.fig.insertBefore(F.parts[want[i]].g, F.parts[cur[i]].g);
+        for (j = i + 1; j < n && cur[j] !== want[i]; j++) { /* find it */ }
+        for (; j > i; j--) cur[j] = cur[j - 1];
+        cur[i] = want[i];
+      }
+      if (main) setA(F.shadow, 'opacity', T.shadowOp);
+    }
+    function render(sk, dt) {
+      var S = pj.toS(sk.wx, sk.wz, tmpS), X = S[0], Y = S[1], p = S[2];
+      var sc = pj.hN * p / 100, k = pj.kD(p);
+      var phi = sk.frozen ? sk.frozen.phi : sk.th + sk.yawOff;
+      if (sk.prevPhi === sk.prevPhi && dt > 0) sk.yawRate = lerp(sk.yawRate, (phi - sk.prevPhi) / dt, Math.min(1, dt * 20));
+      sk.prevPhi = phi;
+      sk._dt = dt || 0.016;
+      var T = solve(sk, phi, k);
+      applyFig(sk.m, T, sk.look, true);
+      // the faint reflection's limbs refresh at 20 Hz (staggered across skaters; full rate in the air) to cut its DOM writes;
+      // its root transform below still updates every frame, so it never drifts from the feet
+      if (!(dt > 0) || sks.length < 3 || (frameN + sk.i) % (lite ? 6 : 3) === 0 || sk.lift > 0) applyFig(sk.rf, T, sk.look, false);
+      setS(sk.m.rootS, m6(RM, sc, 0, 0, sc, X, Y));
+      setS(sk.rf.rootS, m6(RM, sc, 0, 0, -sc * 0.86, X, Y));
+      sk.sx = X; sk.sy = Y; sk.sc = sc;
+      sk.bbox[0] = X + sk.lbox[0] * sc; sk.bbox[1] = Y + sk.lbox[1] * sc; sk.bbox[2] = X + sk.lbox[2] * sc; sk.bbox[3] = Y + sk.lbox[3] * sc;
+      // blade point -> world -> screen
+      var bb = sk._bladeB, cph = Math.cos(phi), sph = Math.sin(phi), u = pj.hN / 100;
+      var bx, bz, ox = 0, oz = 0;
+      if (!sk.scrape) { ox = (bb[0] * cph - bb[1] * sph) * u; oz = (bb[0] * sph + bb[1] * cph) * u; }
+      // The traced line follows the skater's own path (the point under the pelvis), pulled a little and slowly
+      // towards the gliding foot. Following the foot itself made the line hop across at every push and come out
+      // as a jagged zigzag; this way it flows in smooth arcs like real tracings.
+      var ct = Math.cos(sk.th), st = Math.sin(sk.th), al = ox * ct + oz * st, lt = -ox * st + oz * ct;
+      al = clamp(al, -3 * u, 3 * u); lt = clamp(lt, -2.5 * u, 2.5 * u);
+      var on = !!(sk.onIce && sk.lift < 0.5 && !sk.frozen);
+      if (!(dt > 0) || !sk.blade.onIce || !on || sk.blade.al !== sk.blade.al) { sk.blade.al = al; sk.blade.lt = lt; }
+      else {
+        var kb = 1 - Math.exp(-dt / 0.45);
+        sk.blade.al += (al - sk.blade.al) * kb;
+        sk.blade.lt += (lt - sk.blade.lt) * kb;
+      }
+      bx = sk.wx + sk.blade.al * ct - sk.blade.lt * st; bz = sk.wz + sk.blade.al * st + sk.blade.lt * ct;
+      var B = pj.toS(bx, bz, B3);
+      var bl = sk.blade;
+      bl.x = n2(B[0]); bl.y = n2(B[1]); bl.onIce = on; bl.scrape = !!sk.scrape; bl.color = sk.look.glow;
+    }
+    var layerOrder = [];   // skaters in current DOM order (back to front)
+    function sortLayers() {
+      var n = sks.length, i, j, s, changed = layerOrder.length !== n;
+      if (changed) { layerOrder.length = 0; for (i = 0; i < n; i++) layerOrder.push(sks[i]); }
+      // insertion sort by screen y (nearly sorted already, so this is O(n) most frames)
+      for (i = 1; i < n; i++) {
+        s = layerOrder[i];
+        for (j = i - 1; j >= 0 && layerOrder[j].sy > s.sy; j--) { layerOrder[j + 1] = layerOrder[j]; changed = true; }
+        layerOrder[j + 1] = s;
+      }
+      if (!changed) return;
+      // a keyboard user may be on one of the skaters: never move that one (moving a node drops its focus),
+      // re-order the others around it instead, and only move the nodes that are out of place
+      var act = document.activeElement, pin = null;
+      for (i = 0; i < n; i++) if (layerOrder[i].m.root === act) pin = act;
+      var next = null, nextR = null, e, er;
+      for (i = n - 1; i >= 0; i--) {
+        e = layerOrder[i].m.root; er = layerOrder[i].rf.root;
+        if (e !== pin && e.nextSibling !== next) layer.insertBefore(e, next);
+        if (er.nextSibling !== nextR) reflLayer.insertBefore(er, nextR);
+        next = e; nextR = er;
+      }
+      if (pin && document.activeElement !== pin && pin.focus) pin.focus({ preventScroll: true });
+    }
+
+    /* ---------------------------------------------------------------- placement */
+    function placeAll(r) {
+      var hN = pj.hN, pts = [], i, tries;
+      for (i = 0; i < sks.length; i++) {
+        var best = null, bestScore = -1e18;
+        for (tries = 0; tries < 160; tries++) {
+          var x = lerp(pj.bx0, pj.bx1, r()), z = lerp(Math.max(pj.bz0, pj.zA * 0.95), Math.min(pj.bz1, pj.zB), r());
+          var e = sdist(pj, x, z);
+          if (e < 0.7 * hN) continue;
+          var md = 1e9;
+          for (var j = 0; j < pts.length; j++) md = Math.min(md, aniso(x - pts[j][0], z - pts[j][1]), visD(x - pts[j][0], z - pts[j][1], (z + pts[j][1]) / 2) * 0.9 * hN);
+          var score = Math.min(md, 2.4 * hN) + Math.min(e, 1.2 * hN) * 0.3;
+          if (score > bestScore) { bestScore = score; best = [x, z]; }
+        }
+        if (!best) best = [pj.pole[0] + (r() - 0.5) * hN, pj.pole[1] + (r() - 0.5) * hN];
+        pts.push(best);
+        var s = sks[i];
+        s.wx = best[0]; s.wz = best[1];
+        var toHome = Math.atan2(pj.home[1] - s.wz, pj.home[0] - s.wx);
+        s.th = toHome + (r() - 0.5) * 2.2 + PI / 2 * (r() < 0.5 ? 1 : -1) * 0.5;
+      }
+    }
+
+    /* ---------------------------------------------------------------- reduced motion */
+    function staticScene() {
+      var r = mulberry(Math.floor(seed * 131) + 7);
+      placeAll(r);
+      var poses = [[P_GLIDE_L, -0.5], [P_HOLD, PI + 0.55], [P_TWO, 0.4], [P_GLIDE_R, PI - 0.4], [P_HOLD, -0.3]];
+      for (var i = 0; i < sks.length; i++) {
+        var s = sks[i], pp = poses[i % poses.length];
+        copyP(s.P, pp[0]);
+        s.lift = 0; s.onIce = true; s.scrape = false;
+        s.frozen = { phi: pp[1] };
+        render(s, 0);
+      }
+      sortLayers();
+    }
+
+    /* ---------------------------------------------------------------- init */
+    for (var si = 0; si < count; si++) sks.push(makeSkater(si));
+    placeAll(rng);
+    for (si = 0; si < sks.length; si++) {
+      var sk0 = sks[si];
+      sk0.v = sk0.vC * (0.8 + 0.2 * sk0.r());
+      sk0.vTarget = sk0.vC;
+      sk0.cool = si === 0 ? 0 : 3.5 + si * 3 + sk0.r() * 3;
+      startSeg(sk0, segCruise(si === 0 ? 0.6 : 1 + 2 * sk0.r(), false));
+      cruiseGen(sk0, 0, sk0.P, false);
+      copyP(sk0.from, sk0.P);   // blend from the stroke pose drawn at start-up, so frame 1 does not snap
+    }
+    if (reduce) staticScene();
+    else { for (si = 0; si < sks.length; si++) render(sks[si], 0); sortLayers(); }
+
+    /* ---------------------------------------------------------------- API */
+    function step(nowMs) {
+      if (reduce) return;
+      var c0 = clock();
+      if (nowMs == null) nowMs = c0;
+      var dt = lastNow == null ? 0 : (nowMs - lastNow) / 1000;
+      lastNow = nowMs;
+      dt = clamp(dt, 0, 0.05);
+      frameN++;
+      if (dt > 0) {
+        simT += dt;
+        predictAll();
+        for (var i = 0; i < sks.length; i++) if (!sks[i].frozen) update(sks[i], dt);
+        constrain(dt);
+      }
+      for (i = 0; i < sks.length; i++) render(sks[i], dt);
+      sortLayers();
+      if (dt > 0) {
+        // slow average (~1 s) of clipped samples, so a lone GC / JIT spike or the first two
+        // seconds of warm-up never switch it on: only a steadily slow device does
+        cost += (Math.min(5, clock() - c0) - cost) * 0.02;
+        if (liteLock != null) lite = liteLock;
+        else if (!lite && cost > 3.2 && frameN > 120) lite = 1;
+        else if (lite && cost < 1.6) lite = 0;
+      }
+    }
+    function setIce(ice) {
+      var old = pj;
+      useProj(makeProj(ice));
+      for (var k2 = 0; k2 < sks.length; k2++) sks[k2].vC = sks[k2].vC0 / Math.sqrt(crowd);
+      for (var i = 0; i < sks.length; i++) {
+        var s = sks[i];
+        var u = (s.wx - old.bx0) / Math.max(1, old.bx1 - old.bx0), w = (s.wz - old.bz0) / Math.max(1, old.bz1 - old.bz0);
+        s.wx = lerp(pj.bx0, pj.bx1, clamp(u, 0, 1));
+        s.wz = lerp(pj.bz0, pj.bz1, clamp(w, 0, 1));
+      }
+      for (var it = 0; it < 6; it++) constrain(0);
+      if (reduce) { staticScene(); return; }
+      for (i = 0; i < sks.length; i++) render(sks[i], 0);
+      sortLayers();
+    }
+    function blades() {
+      var out = [];
+      for (var i = 0; i < sks.length; i++) {
+        var b = sks[i].blade;
+        out.push({ x: b.x, y: b.y, onIce: b.onIce, scrape: b.scrape, color: b.color });
+      }
+      return out;
+    }
+    function skaterAt(x, y) {
+      var order = sks.slice().sort(function (a, b) { return b.sy - a.sy; });
+      for (var i = 0; i < order.length; i++) {
+        var bb = order[i].bbox;
+        if (x >= bb[0] && x <= bb[2] && y >= bb[1] && y <= bb[3]) return order[i].i;
+      }
+      return -1;
+    }
+    var JUMPING = { step: 1, edge: 1, load: 1, takeoff: 1, air: 1 }, LANDED = { land: 1, hold: 1, proud: 1, land2: 1, steady: 1 }, GETUP ={ slip: 1, slide: 1, sit: 1, kneel: 1, lunge: 1, rise: 1, brush: 1 };
+    // the unhurried beats after a jump (a proud pose, a breath, turning forward again), skipped when a visitor is waiting
+    var AFTER = { proud: 1, exhale: 1, turnBF: 1 };
+    function trigger(i) {
+      var s = sks[i];
+      if (!s || reduce) return '';
+      var n = s.seg ? s.seg.name : '';
+      if (n === 'cruise' || n === 'cruiseBack' || n === 'turnFB' || n === 'turnBF') { s.trig = true; s.queue = []; if (n === 'cruise' || n === 'cruiseBack') s.segT = s.seg.dur; return 'setup'; }
+      // already setting up (the set-up's end() makes sure a jump follows, even if it runs out of room),
+      // mid-jump or getting up: try (again) right after
+      s.trig = true;
+      if (n === 'backX') {
+        // this set-up was going to end in a bail: make it a real jump instead, as the visitor asked
+        if (s.outcome === 'bail') { storyReturn(s); s.hist.pop(); s.queue = attemptTail(s, pickOutcome(s, true), false); s.hist.push(s.outcome); }
+        return 'setup';
+      }
+      // the next set-up follows straight after this jump's landing (skating backwards out of it, as skaters do)
+      s.queue = s.queue.filter(function (q) { return !AFTER[q.name]; });
+      return JUMPING[n] ? 'jumping' : (GETUP[n] ? 'getup' : 'after');
+    }
+    function elements() { var out = []; for (var i = 0; i < sks.length; i++) out.push(sks[i].m.root); return out; }
+    function boxes() { var out = []; for (var i = 0; i < sks.length; i++) out.push(sks[i].bbox.slice()); return out; }
+    function setLite(v) { liteLock = v == null ? null : (v ? 1 : 0); if (liteLock != null) lite = liteLock; }
+
+    var rink = { step: step, setIce: setIce, blades: blades, skaterAt: skaterAt, trigger: trigger, elements: elements, boxes: boxes, setLite: setLite };
+    // testing hooks (not part of the public contract)
+    rink._debug = {
+      sks: sks,
+      poses: POSES,
+      force: function (i, outcome, longHold) {
+        var s = sks[i]; if (!s) return;
+        s.forced = { outcome: outcome, longHold: !!longHold };
+        s.queue = [];
+        if (s.seg && (s.seg.name === 'cruise' || s.seg.name === 'cruiseBack')) s.segT = s.seg.dur;
+      },
+      info: function (i) {
+        var s = sks[i];
+        return { seg: s.seg && s.seg.name, segT: s.segT, x: s.sx, y: s.sy, sc: s.sc, wx: s.wx, wz: s.wz, v: s.v, kH: s.kH,
+          yawOff: s.yawOff, th: s.th, lift: s.lift, outcome: s.outcome, cool: s.cool, queue: s.queue.map(function (q) { return q.name; }),
+          bbox: s.bbox.slice(), inside: sdist(pj, s.wx, s.wz) / pj.hN, aborts: s.aborts || 0, attempts: s.attempts, lh: s.longHold };
+      },
+      pose: function (i, name, yawDeg, lift) {
+        var s = sks[i];
+        copyP(s.P, POSES[name] || P_STAND);
+        s.lift = lift || 0;
+        s.frozen = { phi: (yawDeg || 0) * PI / 180 };
+        render(s, 0); sortLayers();
+      },
+      place: function (i, x, y, headingDeg) {
+        var s = sks[i], w = pj.toW(x, y);
+        s.wx = w[0]; s.wz = w[1];
+        if (headingDeg != null) s.th = headingDeg * PI / 180;
+        render(s, 0); sortLayers();
+      },
+      unfreeze: function (i) { sks[i].frozen = null; },
+      proj: function () { return pj; },
+      crowd: function () { return { crowd: crowd, kMax: kMax, narrow: narrow, area: pj.area, midWidth: pj.midWidth }; },
+      time: function () { return simT; },
+      budget: function () { return { cost: cost, lite: lite }; },
+      lockLite: setLite,
+      lite: function () { return lite; },
+      pf: PF
+    };
+    return rink;
+  }
+
+  root.createSkaterRink = createSkaterRink;
+})(typeof window !== 'undefined' ? window : this);
+
+/* ======================================================================================
+   2. The page
+   ====================================================================================== */
 (function () {
   "use strict";
 
@@ -9,8 +1925,8 @@
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var $ = function (id) { return document.getElementById(id); };
 
-  // Seeded random so trees and stars land in the same place on every visit.
-  var seed = 11;
+  // Seeded random so the village stars look the same on every visit.
+  var seed = 21;
   function rand() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }
   function el(name, attrs, parent) {
     var node = document.createElementNS(SVGNS, name);
@@ -18,466 +1934,647 @@
     if (parent) parent.appendChild(node);
     return node;
   }
+  function f(n) { return Math.round(n * 10) / 10; }
 
-  /* ---------- Painting the scene ---------- */
+  /* ---------- The lake: a wide crop and a tall (phone) crop of the same paper scene ---------- */
 
-  function buildStars() {
-    var g = $("stars");
-    for (var i = 0; i < 160; i++) {
-      var c = el("circle", {
-        cx: (rand() * 1600).toFixed(1), cy: (rand() * 460).toFixed(1),
-        r: (0.6 + rand() * 1.5).toFixed(2), fill: rand() > 0.85 ? "#ffe7b0" : "#ffffff", class: "star"
-      }, g);
-      c.style.animationDelay = (rand() * 4).toFixed(2) + "s";
-      c.style.animationDuration = (3 + rand() * 5).toFixed(2) + "s";
+  // Where skaters may glide (they never leave this polygon) and how tall they are near and far.
+  // Measured from the artwork: no part of the front layer covers either polygon.
+  var SCENE = {
+    wide: {
+      viewBox: [0, 0, 1600, 1000],
+      ice: {
+        icePolygon: [[440, 632], [1160, 632], [1280, 650], [1262, 760], [1240, 880], [1224, 990], [384, 990], [362, 880], [344, 760], [332, 650]],
+        horizonY: 590, farY: 640, nearY: 990, skaterHeightFar: 64, skaterHeightNear: 210
+      },
+      foxPath: { y: 589, x0: 380, x1: 1230 }
+    },
+    tall: {
+      viewBox: [0, -200, 1600, 1200],
+      ice: {
+        icePolygon: [[580, 636], [1028, 636], [1030, 700], [1004, 740], [1002, 830], [986, 930], [956, 990], [650, 990], [632, 930], [628, 820], [596, 780], [590, 700]],
+        horizonY: 590, farY: 640, nearY: 990, skaterHeightFar: 64, skaterHeightNear: 200
+      },
+      foxPath: { y: 589, x0: 600, x1: 1130 }   // starts right of the big phone-only pine on the left
     }
+  };
+  // The open ice below the far shore and the side banks; skate marks are clipped to it.
+  var ICE_SURFACE = "M-200,790 L0,704 L90,666 L180,636 L270,612 L360,596 L440,592 L1170,592 L1250,596 L1340,614 L1430,638 L1520,670 L1600,708 L1800,800 L1800,1200 L-200,1200 Z";
+  var HERO_SVGS = ["heroBack", "heroSkaters", "heroFront"];
+  // Same test as the CSS that swaps the wide and tall titles, so the crop and the title always agree.
+  var tallQuery = window.matchMedia ? window.matchMedia("(max-aspect-ratio: 3/4)") : null;
+  var layout = SCENE.wide, layoutName = "";
+  var rink = null;
+
+  function applyLayout() {
+    var name = (tallQuery ? tallQuery.matches : window.innerWidth / window.innerHeight <= 0.75) ? "tall" : "wide";
+    if (name === layoutName) return;
+    layoutName = name;
+    layout = SCENE[name];
+    var vb = layout.viewBox.join(" ");
+    HERO_SVGS.forEach(function (id) { var s = $(id); if (s) s.setAttribute("viewBox", vb); });
+    trails = []; chips = []; iceKey = "";
   }
 
-  function tree(g, x, baseY, h, color, snowy) {
-    var w = h * 0.42;
-    el("path", { d: "M" + x.toFixed(1) + "," + (baseY - h).toFixed(1) + " L" + (x + w / 2).toFixed(1) + "," + baseY.toFixed(1) + " L" + (x - w / 2).toFixed(1) + "," + baseY.toFixed(1) + " Z", fill: color }, g);
-    if (snowy) el("path", { d: "M" + x.toFixed(1) + "," + (baseY - h).toFixed(1) + " l" + (w * 0.13).toFixed(1) + "," + (h * 0.3).toFixed(1) + " l" + (-w * 0.26).toFixed(1) + ",0 Z", fill: "#e9ecff", opacity: 0.75 }, g);
-  }
-
-  function along(g, ridge, step, minH, maxH) {
-    for (var s = 0; s < ridge.length - 1; s++) {
-      var a = ridge[s], b = ridge[s + 1];
-      var len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      for (var d = 0; d < len; d += step * (0.6 + rand() * 0.8)) {
-        var t = d / len;
-        tree(g, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t + 6, minH + rand() * (maxH - minH), rand() > 0.5 ? "#16304f" : "#1b3a60", rand() > 0.55);
-      }
-    }
-  }
-
-  function buildTreeline() {
-    var g = $("treeline");
-    along(g, [[0, 470], [120, 498], [250, 540], [380, 584], [500, 624], [580, 668]], 9, 14, 30);
-    along(g, [[1600, 440], [1480, 468], [1340, 516], [1210, 572], [1100, 630], [1060, 668]], 9, 14, 30);
-    // A few trees scattered down the slopes for texture.
-    for (var i = 0; i < 70; i++) {
-      var left = i % 2 === 0;
-      var x = left ? rand() * 520 : 1080 + rand() * 520;
-      var top = left ? 470 + (x / 580) * 198 : 440 + ((1600 - x) / 540) * 228;
-      var y = top + 20 + rand() * (668 - top - 10);
-      if (y < 664) tree(g, x, y, 12 + rand() * 14, "#122744", rand() > 0.6);
-    }
-    // Spruce along the shore, leaving the castle grounds open.
-    for (var sx = 0; sx < 1600; sx += 7 + rand() * 6) {
-      if (sx > 520 && sx < 1080) continue;
-      tree(g, sx, 668, 14 + rand() * 22, rand() > 0.5 ? "#112440" : "#16305a", rand() > 0.7);
-    }
-  }
-
-  function pine(g, x, baseY, h, w) {
-    el("rect", { x: x - w * 0.05, y: baseY - h * 0.08, width: w * 0.1, height: h * 0.1, fill: "#3b2140" }, g);
-    var tiers = 6;
-    for (var i = 0; i < tiers; i++) {
-      var top = baseY - h + (i * h) / (tiers + 0.5);
-      var bottom = top + h * 0.38;
-      var half = (w / 2) * (0.3 + (0.7 * (i + 1)) / tiers);
-      el("path", { d: "M" + x + "," + top + " L" + (x + half) + "," + bottom + " Q" + x + "," + (bottom + h * 0.04) + " " + (x - half) + "," + bottom + " Z", fill: i % 2 ? "#15305a" : "#1b3c68" }, g);
-      el("path", { d: "M" + (x - half) + "," + bottom + " Q" + x + "," + (bottom + h * 0.04) + " " + (x + half) + "," + bottom + " Q" + x + "," + (bottom + h * 0.012) + " " + (x - half) + "," + bottom + " Z", fill: "#f2f2ff", opacity: 0.9 }, g);
-    }
-    el("path", { d: "M" + x + "," + (baseY - h) + " l" + w * 0.06 + "," + h * 0.08 + " l" + -w * 0.12 + ",0 Z", fill: "#ffffff" }, g);
-  }
-
-  function buildPines() {
-    var g = $("pines");
-    pine(g, 200, 905, 220, 104);
-    pine(g, 70, 950, 340, 160);
-    pine(g, 1400, 900, 220, 104);
-    pine(g, 1530, 945, 350, 166);
-  }
-
-  function buildLanterns() {
-    var g = $("lanterns");
-    [560, 690, 910, 1050].forEach(function (x, i) {
-      var y = 674;
-      var glow = el("circle", { cx: x, cy: y - 22, r: 18, fill: "url(#gWarm)", class: "lantern-glow" }, g);
-      glow.style.animationDelay = i * 1.2 + "s";
-      el("path", { d: "M" + x + "," + y + " V" + (y - 18), stroke: "#2b2257", "stroke-width": 2 }, g);
-      el("rect", { x: x - 3.5, y: y - 27, width: 7, height: 9, rx: 1, fill: "#ffd27a" }, g);
-      el("path", { d: "M" + (x - 5) + "," + (y - 27) + " L" + x + "," + (y - 32) + " L" + (x + 5) + "," + (y - 27) + " Z", fill: "#2b2257" }, g);
-    });
-  }
-
-  function buildWindows() {
-    var g = $("windows");
-    function win(x, y, w, h, arched) {
-      var lit = rand() > 0.16;
-      var d = arched
-        ? "M" + x + "," + (y + h) + " L" + x + "," + (y + w / 2) + " Q" + (x + w / 2) + "," + (y - w * 0.2) + " " + (x + w) + "," + (y + w / 2) + " L" + (x + w) + "," + (y + h) + " Z"
-        : "M" + x + "," + y + " h" + w + " v" + h + " h" + -w + " Z";
-      var p = el("path", { d: d, fill: lit ? (rand() > 0.3 ? "#ffcf73" : "#ffe3a3") : "#4f4680", class: "win" + (lit && rand() > 0.8 ? " flicker" : "") }, g);
-      p.style.animationDelay = (rand() * 9).toFixed(1) + "s";
-    }
-    [546, 570, 594, 618].forEach(function (y, row) {
-      for (var x = 676; x <= 918; x += 18) {
-        if (x > 760 && x < 830 && row === 3) continue;
-        if (x > 680 && x < 712 && row === 0) continue;
-        if (x > 888 && x < 920 && row === 0) continue;
-        win(x, y, 7, 12, row === 3);
-      }
-    });
-    [598, 622].forEach(function (y) {
-      for (var x = 562; x <= 636; x += 16) win(x, y, 7, 11, false);
-      for (var x2 = 958; x2 <= 1032; x2 += 16) win(x2, y, 7, 11, false);
-    });
-    [436, 464, 492].forEach(function (y) { win(783, y, 9, 16, true); win(808, y, 9, 16, true); });
-    [516, 546, 576, 606].forEach(function (y) { win(647, y, 6, 11, true); win(947, y, 6, 11, true); });
-    [474, 500].forEach(function (y) { win(732, y, 7, 12, true); win(860, y, 7, 12, true); });
-    [578, 606].forEach(function (y) { win(543, y, 6, 10, true); win(1051, y, 6, 10, true); });
-    el("path", { d: "M694,512 h4 v10 h-4 Z M902,512 h4 v10 h-4 Z", fill: "#ffcf73" }, g);
-  }
-
-  function buildIce() {
-    var cracks = $("cracks"), bubbles = $("bubbles");
-    for (var i = 0; i < 26; i++) {
-      var x = rand() * 1600, y = 690 + rand() * 300, d = "M" + x.toFixed(0) + "," + y.toFixed(0);
-      var k = 0.5 + (y - 690) / 300;
-      for (var s = 0; s < 3 + rand() * 3; s++) {
-        x += (30 + rand() * 70) * k * (rand() > 0.5 ? 1 : -1);
-        y += (rand() - 0.5) * 24 * k;
-        d += " L" + x.toFixed(0) + "," + y.toFixed(0);
-      }
-      el("path", { d: d, "stroke-width": (0.8 + k).toFixed(1) }, cracks);
-    }
-    for (var b = 0; b < 16; b++) {
-      var bx = rand() * 1600, by = 720 + rand() * 270, kk = 0.5 + (by - 690) / 300;
-      for (var j = 0; j < 4; j++) {
-        el("ellipse", { cx: (bx + (rand() - 0.5) * 60 * kk).toFixed(0), cy: (by + (rand() - 0.5) * 10 * kk).toFixed(0), rx: (6 + rand() * 22 * kk).toFixed(0), ry: (2 + rand() * 4 * kk).toFixed(0) }, bubbles);
-      }
-    }
-  }
-
-  /* ---------- Mapping the scene's coordinates to the screen ---------- */
+  /* ---------- Fitting the hero drawings to the screen ---------- */
 
   var view = { s: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
   function measure() {
-    view.w = window.innerWidth; view.h = window.innerHeight;
-    // On tall phone screens, show extra sky so the castle sits below the text.
-    var vbY = view.w / view.h < 0.75 ? -180 : 0, vbH = 1000 - vbY;
-    var vb = "0 " + vbY + " 1600 " + vbH;
-    $("scene").setAttribute("viewBox", vb);
-    $("fx").setAttribute("viewBox", vb);
-    view.s = Math.max(view.w / 1600, view.h / vbH);
-    view.ox = (view.w - 1600 * view.s) / 2;
-    view.oy = (view.h - vbH * view.s) / 2 - vbY * view.s;
+    applyLayout();
+    var r = $("heroBack").getBoundingClientRect();
+    var vb = layout.viewBox;
+    view.w = r.width; view.h = r.height;
+    view.s = Math.max(view.w / vb[2], view.h / vb[3]);
+    view.ox = (view.w - vb[2] * view.s) / 2 - vb[0] * view.s;
+    view.oy = (view.h - vb[3] * view.s) / 2 - vb[1] * view.s;
     view.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    [$("blades"), $("snow")].forEach(function (c) {
-      c.width = Math.round(view.w * view.dpr);
-      c.height = Math.round(view.h * view.dpr);
+    var c = $("marks");
+    c.width = Math.round(view.w * view.dpr);
+    c.height = Math.round(view.h * view.dpr);
+    sizeSnow();
+    iceClip = null;
+    par.dirty = true;
+    fitFox();
+    fitTitle();
+    updateIce();
+    if (reduceMotion) { drawStillMarks(); drawSnow(0); }
+  }
+  // The fox walks only where it is fully on screen (phones crop the sides of the scene).
+  var foxRange = { x0: 380, x1: 1230 };
+  function fitFox() {
+    var p = layout.foxPath, half = 46, l = (0 - view.ox) / view.s + half, r = (view.w - view.ox) / view.s - half;
+    foxRange.x0 = Math.max(p.x0, l); foxRange.x1 = Math.min(p.x1, r);
+    if (foxRange.x1 < foxRange.x0) foxRange.x0 = foxRange.x1 = (foxRange.x0 + foxRange.x1) / 2;
+    fox.x = Math.max(foxRange.x0, Math.min(foxRange.x1, fox.x));
+    fox.target = fox.x;
+    placeFox(0);
+  }
+
+  // Fit the title banner to the screen: shrink it if the words would not fit across (they keep 18 px from both
+  // screen edges), keep the navigation pills off the words, and on wide screens let the banner rise as far as the
+  // pills allow (its top scallops may run under the pills or off the screen) so the mountains under it get more sky.
+  var titleBoxes = [], titleBottom = 0, titlePaper = null;   // each title word, the banner's lower edge and its box, in px from the top of the lake
+  function fitTitle() {
+    var tall = layoutName === "tall";
+    var g = document.querySelector(tall ? ".title-tall" : ".title-wide"), nav = document.querySelector(".nav");
+    if (!g || !nav || !g.getBBox) return;
+    // banner geometry in scene units (getBBox ignores the banner's own transforms and its drop-in animation);
+    // a word's own transform (the tilted "my") is applied to its corners, so they count too
+    var boxOf = function (n) {
+      var q = n.getBBox(), tl = n.transform && n.transform.baseVal, m = null, r = { l: 1e9, t: 1e9, r: -1e9, b: -1e9 };
+      if (tl) for (var i = 0; i < tl.numberOfItems; i++) m = m ? m.multiply(tl.getItem(i).matrix) : tl.getItem(i).matrix;
+      [[q.x, q.y], [q.x + q.width, q.y], [q.x, q.y + q.height], [q.x + q.width, q.y + q.height]].forEach(function (c) {
+        var x = m ? m.a * c[0] + m.c * c[1] + m.e : c[0], y = m ? m.b * c[0] + m.d * c[1] + m.f : c[1];
+        r.l = Math.min(r.l, x); r.t = Math.min(r.t, y); r.r = Math.max(r.r, x); r.b = Math.max(r.b, y);
+      });
+      return r;
+    };
+    var union = function (list) {
+      var r = { l: 1e9, t: 1e9, r: -1e9, b: -1e9 };
+      list.forEach(function (q) { r.l = Math.min(r.l, q.l); r.t = Math.min(r.t, q.t); r.r = Math.max(r.r, q.r); r.b = Math.max(r.b, q.b); });
+      return r;
+    };
+    var each = Array.prototype.map.call(g.querySelectorAll(".h4-letters text"), boxOf);
+    var words = union(each), paper = union(Array.prototype.map.call(g.querySelectorAll(".h4-banner"), boxOf));
+    if (words.r < words.l || paper.r < paper.l) return;
+    var s = view.s, oy = tall ? 40 : 230;
+    var px = function (y) { return view.oy + y * s; };            // scene y -> px from the top of the lake
+    var navBottom = nav.getBoundingClientRect().bottom - $("top").getBoundingClientRect().top;
+    // the words are scaled around the middle of the screen (scene x 800), so the wider half sets the size
+    var half = view.w / s / 2 - 18 / s, k = Math.min(1, half / Math.max(800 - words.l, words.r - 800, 1)), ty = 0;
+    if (tall) k = Math.min(k, (view.w / s - 24) / (paper.r - paper.l));
+    for (; ; k -= 0.02) {
+      // scene units: the words clear the navigation by 12 px
+      var clear = (navBottom + 12 - px(oy + (words.t - oy) * k)) / s;
+      if (tall) ty = Math.max(0, clear, (4 - px(oy + (paper.t - oy) * k)) / s);   // phones: the whole cloud stays on screen
+      // wide screens: the banner may rise until only its top scallops tuck under the navigation pills (their lilac
+      // edge keeps them distinct on the cream paper), so the summits and the lantern string below it stay in view
+      else ty = Math.max(clear, -70);
+      // wide screens: shrink until the banner sits above the hanging lanterns (scene y 375) and the top 38% of the screen;
+      // on desktop-sized screens a little more (down to 88%) so the mountain summits under it stay in view (scene y 325)
+      var bottom = oy + (paper.b - oy) * k + ty;
+      if (tall || k <= 0.62 || (bottom <= 375 && px(bottom) <= view.h * 0.38 && (bottom <= 325 || view.h < 600 || k <= 0.88))) break;
+    }
+    g.style.transformBox = "view-box";
+    g.style.transformOrigin = "800px " + oy + "px";
+    g.style.transform = "translateY(" + f(ty) + "px) scale(" + f(k * 100) / 100 + ")";
+    // where the words end up on the page: the snow skips them and the toast keeps clear of them
+    var X = function (x) { return view.ox + (800 + (x - 800) * k) * s; }, Y = function (y) { return px(oy + (y - oy) * k + ty); };
+    titleBoxes = each.map(function (q) { return { l: X(q.l), t: Y(q.t), r: X(q.r), b: Y(q.b) }; });
+    titleBottom = Y(paper.b);
+    titlePaper = { l: X(paper.l), t: Y(paper.t), r: X(paper.r), b: Y(paper.b) };
+    // wide screens: the mountains rise until the main summit (scene y 346) sits just under the banner's scallops,
+    // so the peaks read tall (the lanterns' string then hangs below the summits, not across them)
+    var mt = $("h4-mtns");
+    if (mt) {
+      var km = tall ? 1 : Math.max(1, Math.min(1.3, (620 - (oy + (paper.b - oy) * k + ty) - 14) / (620 - 346)));
+      if (km > 1.001) mt.setAttribute("transform", "matrix(1 0 0 " + Math.round(km * 1000) / 1000 + " 0 " + f(620 * (1 - km)) + ")");
+      else mt.removeAttribute("transform");
+    }
+    placeToast();
+  }
+
+  // Keep the skaters where people can see them: inside the visible crop and above the scroll cue.
+  var iceKey = "";
+  function clipPolygon(pts, x0, x1, y1) {
+    [function (p) { return p[0] - x0; }, function (p) { return x1 - p[0]; }, function (p) { return y1 - p[1]; }].forEach(function (d) {
+      var out = [];
+      for (var i = 0; i < pts.length; i++) {
+        var a = pts[i], b = pts[(i + 1) % pts.length], da = d(a), db = d(b);
+        if (da >= 0) out.push(a);
+        if ((da >= 0) !== (db >= 0)) { var t = da / (da - db); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+      }
+      pts = out;
     });
-    if (reduceMotion) { drawBlades(performance.now()); drawSnow(); }
+    return pts.map(function (p) { return [Math.round(p[0]), Math.round(p[1])]; });
+  }
+  function visibleIce() {
+    var ice = layout.ice, s = view.s, hero = $("top").getBoundingClientRect();
+    var bottom = view.h, cue = document.querySelector(".scroll-cue");
+    if (cue) bottom = Math.min(bottom, cue.getBoundingClientRect().top - hero.top - 4);
+    var poly = clipPolygon(ice.icePolygon, (16 - view.ox) / s, (view.w - 16 - view.ox) / s, (bottom - view.oy) / s);
+    var out = {};
+    for (var k in ice) out[k] = ice[k];
+    if (poly.length >= 3) out.icePolygon = poly;
+    return out;
+  }
+  function updateIce() {
+    if (!rink) return;
+    var ice = visibleIce(), key = JSON.stringify(ice.icePolygon);
+    if (key !== iceKey) { iceKey = key; rink.setIce(ice); }
   }
 
-  /* ---------- Blade marks carving the ice ---------- */
+  /* ---------- Figure skaters practising axels (engine at the top of this file) ---------- */
 
-  var ICE = { x0: 70, x1: 1530, y0: 702, y1: 890, cx: 800, cy: 780 };
-  var LIFE = 12000;
-  var blades = [];
-  var spray = [];
-
-  function makeBlade(x, y, heading, color, fig) {
-    return { x: x, y: y, h: heading, turn: 0, mode: "glide", modeEnd: 0, color: color, trail: [], fig: fig, spin: 0, spinEnd: 0 };
+  var SKATER_LINES = [
+    "Watch: an axel attempt, just for you.",
+    "One and a half turns in the air. Here goes!",
+    "Back crossovers, a long glide, and... axel!",
+    "Set-up, glide, jump..."
+  ];
+  // when the skater is busy, say what happens next instead
+  var SKATER_NEXT = {
+    jumping: "Watch this try! They'll go again straight after.",
+    getup: "Falling is part of learning. Up again, then another axel!",
+    after: "Another axel coming up next."
+  };
+  var skaterLine = 0, skaterKeys = [], skaterKeyFocused = false;
+  function buildSkaters() {
+    if (!window.createSkaterRink) return;
+    var small = Math.min(window.innerWidth, window.innerHeight) < 600 || layoutName === "tall";
+    var ice = visibleIce();
+    iceKey = JSON.stringify(ice.icePolygon);
+    rink = window.createSkaterRink({
+      layer: $("skaterLayer"),
+      reflLayer: $("skaterRefl"),
+      ice: ice,
+      count: small ? 4 : 5,
+      seed: 11,
+      reduceMotion: reduceMotion
+    });
+    // The figures are re-ordered for depth every frame, so they are not the keyboard stops: each skater gets a
+    // stable, invisible button in label order that follows the figure, and lights the figure up when focused.
+    var keys = el("g", { id: "skaterKeys" }, $("heroSkaters"));
+    rink.elements().forEach(function (g, i) {
+      var key = el("g", { "class": "skater-key", tabindex: "0", role: "button", "aria-label": "Figure skater " + (i + 1) + ": ask them to try an axel" }, keys);
+      var box = el("rect", { x: 0, y: 0, width: 1, height: 1, fill: "none" }, key);
+      skaterKeys.push({ key: key, box: box, at: "" });
+      function go(e) {
+        e.stopPropagation();
+        var now = rink.trigger(i);
+        discover("skater");
+        say(reduceMotion ? "The skaters are resting between jumps." : (SKATER_NEXT[now] || SKATER_LINES[skaterLine++ % SKATER_LINES.length]));
+      }
+      g.addEventListener("click", go);
+      key.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
+      key.addEventListener("focus", function () {
+        var vis = true;
+        try { vis = key.matches(":focus-visible"); } catch (err) { /* older browsers: always show it */ }
+        if (vis) g.classList.add("kb");
+        skaterKeyFocused = true;
+        placeSkaterKeys();
+      });
+      key.addEventListener("blur", function () { g.classList.remove("kb"); skaterKeyFocused = false; });
+    });
+    placeSkaterKeys();
+  }
+  function placeSkaterKeys() {
+    if (!rink || !rink.boxes) return;
+    rink.boxes().forEach(function (b, i) {
+      var k = skaterKeys[i];
+      if (!k) return;
+      var at = f(b[0]) + "," + f(b[1]) + "," + f(Math.max(1, b[2] - b[0])) + "," + f(Math.max(1, b[3] - b[1]));
+      if (at === k.at) return;
+      k.at = at; at = at.split(",");
+      k.box.setAttribute("x", at[0]); k.box.setAttribute("y", at[1]); k.box.setAttribute("width", at[2]); k.box.setAttribute("height", at[3]);
+    });
   }
 
-  function pickMode(b, now) {
-    var r = Math.random();
-    if (r < 0.32) { b.mode = "loop"; b.turnBase = (Math.random() > 0.5 ? 1 : -1) * (2.1 + Math.random() * 0.8); b.modeEnd = now + (Math.PI * 2 / Math.abs(b.turnBase)) * 1000 * (Math.random() > 0.5 ? 1 : 2); }
-    else if (r < 0.6) { b.mode = "serpentine"; b.turnBase = 1.4 + Math.random(); b.modeEnd = now + 3000 + Math.random() * 3000; }
-    else if (r < 0.75 && b.fig === "#figB" && !reduceMotion) { b.mode = "spin"; b.modeEnd = now + 2400; }
-    else { b.mode = "glide"; b.turnBase = (Math.random() - 0.5) * 0.6; b.modeEnd = now + 1500 + Math.random() * 2500; }
-  }
+  /* ---------- Skate marks: glowing lines the blades carve into the ice ---------- */
 
-  function stepBlade(b, now, dt) {
-    if (now > b.modeEnd) pickMode(b, now);
-    if (b.mode === "spin") { b.spin = now; return; }
-    b.spin = 0;
-    var turn;
-    if (b.mode === "loop") turn = b.turnBase;
-    else if (b.mode === "serpentine") turn = b.turnBase * Math.sin(now / 520);
-    else turn = b.turnBase;
-    // Steer back toward the middle of the lake near the edges.
-    var nearEdge = (b.x < ICE.x0 + 120 && Math.cos(b.h) < 0) || (b.x > ICE.x1 - 120 && Math.cos(b.h) > 0) ||
-      (b.y < ICE.y0 + 20 && Math.sin(b.h) < 0) || (b.y > ICE.y1 - 20 && Math.sin(b.h) > 0);
-    if (nearEdge) {
-      var target = Math.atan2((ICE.cy - b.y) / 0.42, ICE.cx - b.x);
-      var diff = Math.atan2(Math.sin(target - b.h), Math.cos(target - b.h));
-      turn = (diff > 0 ? 1 : -1) * 2.8;
-      if (b.mode === "loop") b.modeEnd = now;
+  var LIFE = 8000, trails = [], chips = [], iceClip = null;
+  function getIceClip() {
+    if (!iceClip && window.Path2D) iceClip = new Path2D(ICE_SURFACE);
+    return iceClip;
+  }
+  // 0 at the far edge of the skating area, 1 at the near edge: marks get wider closer to us
+  function depthAt(y) {
+    var ice = layout.ice;
+    return Math.max(0, Math.min(1, (y - ice.farY) / (ice.nearY - ice.farY)));
+  }
+  function burst(x, y, n, color) {
+    for (var i = 0; i < n; i++) {
+      var a = Math.random() * Math.PI * 2, v = 20 + Math.random() * 60;
+      chips.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.45 - 22, t: performance.now(), color: color });
     }
-    b.turn = turn;
-    b.h += turn * dt;
-    var depth = (b.y - ICE.y0) / (ICE.y1 - ICE.y0);
-    var speed = 190 + depth * 120;
-    b.x += Math.cos(b.h) * speed * dt;
-    b.y += Math.sin(b.h) * speed * 0.42 * dt;
-    b.x = Math.max(ICE.x0 - 20, Math.min(ICE.x1 + 20, b.x));
-    b.y = Math.max(ICE.y0 - 6, Math.min(ICE.y1 + 6, b.y));
-    b.trail.push({ x: b.x, y: b.y, t: now });
-    if (Math.abs(turn) > 1.8 && Math.random() < 0.6) {
-      var side = b.h + (turn > 0 ? -Math.PI / 2 : Math.PI / 2);
-      spray.push({ x: b.x, y: b.y, vx: Math.cos(side) * (30 + Math.random() * 50), vy: Math.sin(side) * 16 - Math.random() * 14, t: now });
+  }
+  // How a tracing is drawn, widest first: [width, colour ("" = the skater's own), opacity]. Mostly white and
+  // silver, like lines cut into the ice, with only a faint glow in the skater's colour.
+  var MARK = [[10, "", 0.12], [3.2, "226,234,255", 0.34], [1.3, "255,255,255", 0.85]];
+  var SCRAPE = [[16, "255,255,255", 0.2], [6, "236,244,255", 0.45]];
+  function a3(v) { return Math.round(v * 1000) / 1000; }
+  // Follow each blade: a new line starts after every jump (no marks in the air) and a fall leaves a scrape.
+  // A "pen" trails the blade by a few scene units, so a bump against the edge of the ice comes out as a
+  // rounded turn instead of a sharp corner; its points are kept a few units apart and drawn as one smooth curve.
+  var PEN = 8;
+  function trackBlades(now) {
+    var list = rink.blades(), gap = layoutName === "tall" ? 8 : 7;
+    for (var i = 0; i < list.length; i++) {
+      var b = list[i], tr = trails[i] || (trails[i] = { segs: [], cur: null, offAt: 0, on: true });
+      var kind = b.scrape ? "scrape" : (b.onIce ? "blade" : "");
+      if (!kind) {
+        if (tr.on) { tr.on = false; tr.offAt = now; }
+        tr.cur = null;
+        continue;
+      }
+      var c = tr.cur, last = c && c.pts[c.pts.length - 1];
+      if (!c || c.kind !== kind || (last && Math.abs(b.x - last.x) + Math.abs(b.y - last.y) > 60)) {
+        if (!tr.on && kind === "blade" && now - tr.offAt < 1500) burst(b.x, b.y, 9, b.color); // landing
+        if (kind === "scrape" && (!c || c.kind !== "scrape")) burst(b.x, b.y, 14, "255,255,255"); // a fall
+        c = tr.cur = { kind: kind, color: b.color, pts: [], head: null, pen: { x: b.x, y: b.y }, bx: b.x, by: b.y };
+        tr.segs.push(c);
+        last = null;
+      }
+      tr.on = true;
+      // the pen moves towards the blade by a share of the distance the blade travelled (none while standing still)
+      var pen = c.pen, ds = Math.sqrt((b.x - c.bx) * (b.x - c.bx) + (b.y - c.by) * (b.y - c.by)), kp = 1 - Math.exp(-ds / PEN);
+      pen.x += (b.x - pen.x) * kp; pen.y += (b.y - pen.y) * kp; c.bx = b.x; c.by = b.y;
+      if (!last || Math.sqrt((pen.x - last.x) * (pen.x - last.x) + (pen.y - last.y) * (pen.y - last.y)) >= gap) c.pts.push({ x: pen.x, y: pen.y, t: now });
+      c.head = { x: b.x, y: b.y, t: now };   // the live end of the line, under the boot
+      if (kind === "scrape" && Math.random() < 0.35) burst(b.x, b.y, 1, "255,255,255");
     }
   }
-
-  function drawBlades(now) {
-    var c = $("blades"), ctx = c.getContext("2d");
+  function beginMarks() {
+    var c = $("marks"), ctx = c.getContext("2d");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
     ctx.setTransform(view.s * view.dpr, 0, 0, view.s * view.dpr, view.ox * view.dpr, view.oy * view.dpr);
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    blades.forEach(function (b) {
-      while (b.trail.length && now - b.trail[0].t > LIFE) b.trail.shift();
-      var pts = b.trail, CH = 6;
-      for (var pass = 0; pass < 3; pass++) {
-        for (var i = 0; i < pts.length - 1; i += CH) {
-          var end = Math.min(i + CH, pts.length - 1);
-          var mid = pts[Math.floor((i + end) / 2)];
-          var fade = Math.pow(Math.max(0, 1 - (now - mid.t) / LIFE), 1.4);
-          var k = 0.7 + (mid.y - ICE.y0) / (ICE.y1 - ICE.y0) * 0.9;
-          ctx.beginPath();
-          ctx.moveTo(pts[i].x, pts[i].y);
-          for (var j = i + 1; j <= end; j++) ctx.lineTo(pts[j].x, pts[j].y);
-          if (pass === 0) { ctx.strokeStyle = "rgba(" + b.color + "," + (0.24 * fade).toFixed(3) + ")"; ctx.lineWidth = 10 * k; }
-          else if (pass === 1) { ctx.strokeStyle = "rgba(" + b.color + "," + (0.5 * fade).toFixed(3) + ")"; ctx.lineWidth = 3.6 * k; }
-          else { ctx.strokeStyle = "rgba(255,255,255," + (0.95 * fade).toFixed(3) + ")"; ctx.lineWidth = 1.6 * k; }
-          ctx.stroke();
-        }
-      }
-      // A soft sparkle where the blade meets the ice.
-      if (!b.fig && pts.length) {
-        var p = pts[pts.length - 1];
-        var gr = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 22);
-        gr.addColorStop(0, "rgba(255,255,255,.95)");
-        gr.addColorStop(0.25, "rgba(" + b.color + ",.55)");
-        gr.addColorStop(1, "rgba(" + b.color + ",0)");
-        ctx.fillStyle = gr;
-        ctx.beginPath(); ctx.arc(p.x, p.y, 22, 0, Math.PI * 2); ctx.fill();
-      }
-    });
-    spray = spray.filter(function (s) { return now - s.t < 900; });
-    spray.forEach(function (s) {
-      var age = (now - s.t) / 1000;
-      ctx.fillStyle = "rgba(240,248,255," + (0.9 * (1 - age / 0.9)).toFixed(2) + ")";
-      ctx.beginPath(); ctx.arc(s.x + s.vx * age, s.y + s.vy * age + 30 * age * age, 1.4, 0, Math.PI * 2); ctx.fill();
-    });
+    ctx.save();
+    var clip = getIceClip();
+    if (clip) ctx.clip(clip);
+    ctx.lineCap = "butt"; ctx.lineJoin = "round";
+    return ctx;
   }
-
-  var skaterNodes = [];
-  function buildSkaters() {
-    blades = [
-      makeBlade(560, 800, 0.2, "150,200,255", "#figA"),
-      makeBlade(1050, 880, Math.PI + 0.3, "190,160,255", "#figB"),
-      makeBlade(800, 740, 0.8, "255,214,140", null)
-    ];
-    blades.forEach(function (b) {
-      if (!b.fig) return;
-      b.refl = el("use", { href: b.fig }, $("skaterRefl"));
-      b.node = el("use", { href: b.fig, filter: "url(#fRim)" }, $("skaters"));
-      skaterNodes.push(b);
-    });
-    if (reduceMotion) {
-      // A still picture: pre-carve a few loops so the ice still shows marks.
-      var t = performance.now() - LIFE * 0.6;
-      for (var i = 0; i < 600; i++) blades.forEach(function (b) { stepBlade(b, t + i * 16, 0.016); });
-      blades.forEach(function (b) { b.trail.forEach(function (p) { p.t = performance.now() - LIFE * 0.3; }); });
+  // One layer of a tracing: a smooth curve through the points (quadratic pieces joined at the midpoints),
+  // stroked in short runs so older parts can fade. Runs meet at a midpoint with the same direction and
+  // flat ends, so they never overlap: no bright knots along the line.
+  function traceLayer(ctx, P, now, spec, color) {
+    var n = P.length, CH = 5, i0, i1, i, mid, fade, k;
+    var style = function (q) {
+      fade = Math.pow(Math.max(0, 1 - (now - q.t) / LIFE), 1.4);
+      k = 0.45 + depthAt(q.y) * 0.9;
+      ctx.strokeStyle = "rgba(" + (spec[1] || color) + "," + a3(spec[2] * fade) + ")";
+      ctx.lineWidth = spec[0] * k;
+    };
+    if (n === 2) {
+      style(P[0]);
+      ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y); ctx.lineTo(P[1].x, P[1].y); ctx.stroke();
+      return;
     }
-    placeSkaters(performance.now());
+    for (i0 = 1; i0 <= n - 2; i0 += CH) {
+      i1 = Math.min(i0 + CH - 1, n - 2);
+      mid = P[(i0 + i1) >> 1];
+      style(mid);
+      if (fade <= 0.002) continue;
+      ctx.beginPath();
+      if (i0 === 1) ctx.moveTo(P[0].x, P[0].y);
+      else ctx.moveTo((P[i0 - 1].x + P[i0].x) / 2, (P[i0 - 1].y + P[i0].y) / 2);
+      for (i = i0; i <= i1; i++) ctx.quadraticCurveTo(P[i].x, P[i].y, (P[i].x + P[i + 1].x) / 2, (P[i].y + P[i + 1].y) / 2);
+      if (i1 === n - 2) ctx.lineTo(P[n - 1].x, P[n - 1].y);
+      ctx.stroke();
+    }
   }
-
-  function placeSkaters(now) {
-    skaterNodes.forEach(function (b) {
-      var depth = (b.y - ICE.y0) / (ICE.y1 - ICE.y0);
-      var sc = 0.95 + depth * 0.8;
-      var sx = (Math.cos(b.h) >= 0 ? 1 : -1) * sc;
-      if (b.spin) sx = sc * Math.cos(now / 60);
-      b.node.setAttribute("transform", "translate(" + b.x.toFixed(1) + "," + b.y.toFixed(1) + ") scale(" + sx.toFixed(3) + "," + sc.toFixed(3) + ")");
-      b.refl.setAttribute("transform", "translate(" + b.x.toFixed(1) + "," + (b.y + 2).toFixed(1) + ") scale(" + sx.toFixed(3) + "," + (-sc * 0.8).toFixed(3) + ")");
+  var marksEmpty = false;
+  function drawMarks(now) {
+    var any = chips.length > 0;
+    for (var ti = 0; ti < trails.length && !any; ti++) if (trails[ti] && trails[ti].segs.length) any = true;
+    if (!any && marksEmpty) return;   // nothing on the ice, and the canvas is already clear
+    marksEmpty = !any;
+    var ctx = beginMarks();
+    trails.forEach(function (tr) {
+      tr.segs = tr.segs.filter(function (s) {
+        while (s.pts.length && now - s.pts[0].t > LIFE) s.pts.shift();
+        return s.pts.length > 0 || s === tr.cur;
+      });
+      tr.segs.forEach(function (s) {
+        var P = s.pts, h = s.head, l = P[P.length - 1];
+        if (!P.length) return;
+        if (h && l && Math.abs(h.x - l.x) + Math.abs(h.y - l.y) > 0.5) P = P.concat([h]);
+        if (P.length < 2) return;
+        var specs = s.kind === "scrape" ? SCRAPE : MARK;
+        for (var pass = 0; pass < specs.length; pass++) traceLayer(ctx, P, now, specs[pass], s.color);
+      });
     });
-    var a = skaterNodes[0], b2 = skaterNodes[1], layer = $("skaters");
-    var front = a.y > b2.y ? a : b2;
-    if (layer.lastChild !== front.node) layer.appendChild(front.node);
+    // ice chips thrown up by landings and falls
+    chips = chips.filter(function (s) { return now - s.t < 800; });
+    chips.forEach(function (s) {
+      var age = (now - s.t) / 1000;
+      ctx.fillStyle = "rgba(" + s.color + "," + f(0.9 * (1 - age / 0.8)) + ")";
+      ctx.beginPath();
+      ctx.arc(s.x + s.vx * age, s.y + s.vy * age + 60 * age * age, 1.3 + depthAt(s.y), 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+  // Reduced motion: nobody moves, so draw one soft, finished curve leading to each resting skater.
+  function drawStillMarks() {
+    if (!rink) return;
+    var ctx = beginMarks();
+    ctx.lineCap = "round";
+    rink.blades().forEach(function (b, i) {
+      var k = 0.45 + depthAt(b.y) * 0.9, dir = i % 2 ? 1 : -1;
+      var x0 = b.x + dir * 150 * k, y0 = b.y + 22 * k, cx = b.x + dir * 60 * k, cy = b.y - 30 * k;
+      MARK.forEach(function (p) {
+        ctx.strokeStyle = "rgba(" + (p[1] || b.color) + "," + p[2] + ")"; ctx.lineWidth = p[0] * k;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cx, cy, b.x, b.y); ctx.stroke();
+      });
+    });
+    ctx.restore();
   }
 
-  var lastFrame = 0;
-  function frame(now) {
-    var dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0.016;
-    lastFrame = now;
-    blades.forEach(function (b) { stepBlade(b, now, dt); });
-    placeSkaters(now);
-    drawBlades(now);
-    tickSnow(now, dt);
-    requestAnimationFrame(loopRef);
+  /* ---------- Parallax: far layers drift slower than the page, the near pines follow the pointer ---------- */
+
+  var par = { scroll: 0, mx: 0, dirty: true };
+  function applyParallax() {
+    if (!par.dirty) return;
+    par.dirty = false;
+    var u = par.scroll / view.s;
+    var set = function (id, ky, kx) { var g = $(id); if (g) g.setAttribute("transform", "translate(" + f(par.mx * kx) + "," + f(u * ky) + ")"); };
+    set("h4-pSky", 0.5, 0);
+    set("h4-pFar", 0.35, -3);
+    set("h4-pMid", 0.2, -6);
+    set("h4-pNear", 0, -8);
   }
-  var loopRef = frame;
+  function bindParallax() {
+    if (reduceMotion) return;
+    window.addEventListener("scroll", function () { par.scroll = Math.min(window.scrollY, view.h); par.dirty = true; }, { passive: true });
+    if (window.matchMedia && window.matchMedia("(pointer: fine)").matches) {
+      window.addEventListener("pointermove", function (e) { par.mx = (e.clientX / window.innerWidth) * 2 - 1; par.dirty = true; }, { passive: true });
+    }
+  }
 
-  /* ---------- Snow and glitter ---------- */
+  /* ---------- Snow ---------- */
 
-  var flakes = [], wind = { x: 0, y: 0 };
+  var flakes = [], wind = 0, snowDpr = 1, pageScroll = 0;
+  window.addEventListener("scroll", function () { pageScroll = window.scrollY || window.pageYOffset || 0; }, { passive: true });
+  // the shop signs ("ARTIFACT 2") stay clear of flakes, like the title words: their boxes in page coordinates
+  var signBoxes = [];
+  function measureSigns() {
+    var y0 = window.scrollY || window.pageYOffset || 0;
+    signBoxes = Array.prototype.map.call(document.querySelectorAll(".shop .shop-sign"), function (n) {
+      var q = n.getBoundingClientRect();
+      return { l: q.left, t: q.top + y0, r: q.right, b: q.bottom + y0 };
+    });
+  }
+  // on narrow screens the shop row scrolls sideways, which moves the signs
+  var streetEl = document.getElementById("street"), signsQueued = false;
+  if (streetEl) streetEl.addEventListener("scroll", function () {
+    if (signsQueued) return;
+    signsQueued = true;
+    requestAnimationFrame(function () { signsQueued = false; measureSigns(); });
+  }, { passive: true });
+  function sizeSnow() {
+    measureSigns();
+    var sc = $("snow");
+    snowDpr = perf.lite ? 1 : view.dpr;
+    sc.width = Math.round(window.innerWidth * snowDpr);
+    sc.height = Math.round(window.innerHeight * snowDpr);
+  }
   function initSnow() {
-    var n = Math.min(240, Math.round((window.innerWidth * window.innerHeight) / 7000));
+    var n = Math.min(220, Math.round((window.innerWidth * window.innerHeight) / 8000));
     if (reduceMotion) n = Math.round(n * 0.5);
     for (var i = 0; i < n; i++) {
-      var z = 0.25 + Math.random() * 0.75;
-      flakes.push({ x: Math.random(), y: Math.random(), z: z, phase: Math.random() * 6.28, gold: Math.random() < 0.09, vx: 0, vy: 0 });
+      flakes.push({ x: Math.random(), y: Math.random(), z: 0.25 + Math.random() * 0.75, phase: Math.random() * 6.28, tint: Math.random() < 0.12 ? (Math.random() > 0.5 ? "255,200,230" : "170,235,255") : "255,255,255", vy: 0 });
     }
   }
   function tickSnow(now, dt) {
-    wind.x *= 0.97; wind.y *= 0.97;
-    flakes.forEach(function (f) {
-      f.vx *= 0.97; f.vy *= 0.97;
-      f.x += ((Math.sin(now / 2400 + f.phase) * 10 * f.z + wind.x * f.z + f.vx) * dt) / view.w;
-      f.y += ((18 + f.z * 46 + wind.y * f.z + f.vy) * dt) / view.h;
-      if (f.y > 1.02) { f.y = -0.02; f.x = Math.random(); }
-      if (f.y < -0.05) f.y = 1.0;
-      if (f.x > 1.02) f.x = -0.02;
-      if (f.x < -0.02) f.x = 1.02;
+    wind *= 0.97;
+    var W = window.innerWidth, H = window.innerHeight;
+    flakes.forEach(function (fl) {
+      fl.vy *= 0.97;
+      fl.x += ((Math.sin(now / 2400 + fl.phase) * 12 * fl.z + wind * fl.z) * dt) / W;
+      fl.y += ((16 + fl.z * 44 + fl.vy) * dt) / H;
+      if (fl.y > 1.02) { fl.y = -0.02; fl.x = Math.random(); }
+      if (fl.y < -0.05) fl.y = 1;
+      if (fl.x > 1.02) fl.x = -0.02;
+      if (fl.x < -0.02) fl.x = 1.02;
     });
     drawSnow(now);
   }
   function drawSnow(now) {
-    var c = $("snow"), ctx = c.getContext("2d");
-    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
-    ctx.clearRect(0, 0, view.w, view.h);
-    var t = now || 0;
-    flakes.forEach(function (f) {
-      var r = 0.6 + f.z * 2.3;
-      var a = f.gold ? 0.45 + 0.45 * Math.sin(t / 400 + f.phase) : 0.35 + f.z * 0.5;
-      ctx.fillStyle = f.gold ? "rgba(255,226,160," + a.toFixed(2) + ")" : "rgba(255,255,255," + a.toFixed(2) + ")";
-      ctx.beginPath(); ctx.arc(f.x * view.w, f.y * view.h, r, 0, Math.PI * 2); ctx.fill();
+    var c = $("snow"), ctx = c.getContext("2d"), W = window.innerWidth, H = window.innerHeight;
+    ctx.setTransform(snowDpr, 0, 0, snowDpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    flakes.forEach(function (fl) {
+      var r = 0.7 + fl.z * 2.4;
+      var a = 0.45 + fl.z * 0.45;
+      if (fl.tint !== "255,255,255") a *= 0.6 + 0.4 * Math.sin((now || 0) / 300 + fl.phase);
+      ctx.fillStyle = "rgba(" + fl.tint + "," + f(a) + ")";
+      ctx.beginPath(); ctx.arc(fl.x * W, fl.y * H, r, 0, Math.PI * 2); ctx.fill();
     });
+    // no flakes on the title words (the navigation pills sit above the snow in style.css)
+    var top = -pageScroll;
+    if (top + titleBottom > 0) titleBoxes.forEach(function (q) { ctx.clearRect(q.l - 3, top + q.t - 3, q.r - q.l + 6, q.b - q.t + 6); });
+    // nor on the shop signs (with room above for the lift on hover)
+    signBoxes.forEach(function (q) { var y = top + q.t; if (y < H && y + q.b - q.t > -12) ctx.clearRect(q.l - 3, y - 11, q.r - q.l + 6, q.b - q.t + 14); });
   }
-  function gust(clientX) {
+  function gust(x) {
     if (reduceMotion) return;
-    var dir = clientX < view.w / 2 ? 1 : -1;
-    wind.x = dir * (160 + Math.random() * 120);
-    flakes.forEach(function (f) { f.vy = -40 - Math.random() * 120; f.vx = (Math.random() - 0.5) * 120; });
+    wind = (x < window.innerWidth / 2 ? 1 : -1) * (150 + Math.random() * 120);
+    flakes.forEach(function (fl) { fl.vy = -30 - Math.random() * 110; });
   }
 
-  /* ---------- Parallax ---------- */
+  /* ---------- Main loop ---------- */
 
-  function bindParallax() {
-    if (reduceMotion || !window.matchMedia("(pointer: fine)").matches) return;
-    var root = document.documentElement, pending = false, px = 0, py = 0;
-    window.addEventListener("pointermove", function (e) {
-      px = (e.clientX / view.w) * 2 - 1; py = (e.clientY / view.h) * 2 - 1;
-      if (pending) return;
-      pending = true;
-      requestAnimationFrame(function () {
-        root.style.setProperty("--px", px.toFixed(3));
-        root.style.setProperty("--py", py.toFixed(3));
-        pending = false;
-      });
-    });
+  // The lake only animates while it is on screen; the falling snow keeps going over the village.
+  var heroVisible = true, lastFrame = 0;
+  // Lite mode for slow devices, keyed on real frame time (requestAnimationFrame intervals, so canvas and paint
+  // work count, not only the skaters' own code): on when the median frame over ~1.5 s is slower than 25 fps,
+  // off again only above ~45 fps (so it does not flip back and forth). It keeps the look: the skaters' faint
+  // reflections refresh less often, the snow is drawn at 1x, the skate marks every other frame, the lanterns stop flickering.
+  var perf = { d: [], n: 0, lite: false, odd: false };
+  function watchFrames(ms) {
+    if (!(ms > 0) || ms > 250) return;        // first frame, or back from another tab
+    perf.d.push(ms); if (perf.d.length > 90) perf.d.shift();
+    if (++perf.n % 30 || perf.d.length < 45) return;
+    var med = perf.d.slice().sort(function (a, b) { return a - b; })[perf.d.length >> 1];
+    if (perf.lite ? med < 22 : med > 40) setLite(!perf.lite);
   }
-
-  /* ---------- Fox and shooting star ---------- */
-
-  var fox = { walking: false, hop: false };
-  function walkFox() {
-    if (fox.walking || reduceMotion) return;
-    fox.walking = true;
-    var start = performance.now(), node = $("fox"), body = $("foxBody");
-    function step(now) {
-      var k = (now - start) / 48000;
-      if (k >= 1) { fox.walking = false; node.setAttribute("transform", "translate(-60,668)"); setTimeout(walkFox, 25000 + Math.random() * 25000); return; }
-      node.setAttribute("transform", "translate(" + (-60 + k * 1720).toFixed(1) + ",668) scale(1.3)");
-      body.setAttribute("transform", "translate(0," + (Math.abs(Math.sin(now / 120)) * -0.8 - (fox.hop ? 7 : 0)).toFixed(2) + ")");
-      requestAnimationFrame(step);
+  function setLite(on) {
+    perf.lite = on; perf.d.length = 0;
+    document.documentElement.classList.toggle("lite", on);
+    if (rink && rink.setLite) rink.setLite(on ? true : null);
+    sizeSnow();
+  }
+  function watchHero() {
+    if (!window.IntersectionObserver) return;
+    // the top edge of the screen is moved down 1 px, so a lake whose bottom edge only touches the top of the screen
+    // (the page parked at the village, where "Visit the village" and "Artifacts" land) counts as hidden
+    new IntersectionObserver(function (entries) { heroVisible = entries[entries.length - 1].isIntersecting; }, { rootMargin: "-1px 0px 0px 0px" }).observe($("top"));
+  }
+  function frame(now) {
+    var ms = lastFrame ? now - lastFrame : 0, dt = lastFrame ? Math.min(ms / 1000, 0.05) : 0.016;
+    lastFrame = now;
+    var inShop = document.documentElement.classList.contains("in-shop");
+    // also checked against the scroll position: inside a cross-origin frame the observer ignores rootMargin
+    if (heroVisible && !inShop && (window.scrollY || window.pageYOffset || 0) < view.h - 0.5) {
+      watchFrames(ms);
+      if (rink) { rink.step(now); trackBlades(now); if (skaterKeyFocused) placeSkaterKeys(); }
+      perf.odd = !perf.odd;
+      if (!perf.lite || perf.odd) drawMarks(now);
+      stepFox(now, dt);
+      applyParallax();
     }
-    requestAnimationFrame(step);
+    if (!inShop) tickSnow(now, dt);   // an open shop covers the whole screen
   }
-  function shootingStar() {
-    var s = $("shootingStar");
-    if (reduceMotion) return;
-    var x = 300 + Math.random() * 800, y = 40 + Math.random() * 160, start = performance.now();
-    function step(now) {
-      var k = (now - start) / 1000;
-      if (k > 1) { s.setAttribute("opacity", 0); setTimeout(shootingStar, 16000 + Math.random() * 20000); return; }
-      s.setAttribute("transform", "translate(" + (x + k * 260).toFixed(1) + "," + (y + k * 76).toFixed(1) + ")");
-      s.setAttribute("opacity", (Math.sin(k * Math.PI) * 0.95).toFixed(2));
-      requestAnimationFrame(step);
+
+  /* ---------- Fox: trots along the far shore, stops to look around, turns back ---------- */
+
+  var fox = { x: 866, dir: 1, target: 866, restUntil: 0, hop: 0 };
+  function placeFox(now) {
+    var node = $("fox"), body = $("h4-foxBody");
+    if (!node) return;
+    node.setAttribute("transform", "translate(" + f(fox.x) + "," + layout.foxPath.y + ")" + (fox.dir < 0 ? " scale(-1,1)" : ""));
+    var walking = fox.target !== fox.x;
+    var bob = walking ? -Math.abs(Math.sin(now / 110)) * 1.6 : 0;
+    var hop = fox.hop > now ? -Math.sin((1 - (fox.hop - now) / 420) * Math.PI) * 14 : 0;
+    if (body) body.setAttribute("transform", "translate(0," + f(bob + hop) + ")");
+  }
+  function stepFox(now, dt) {
+    var p = foxRange;
+    if (fox.target === fox.x) {
+      if (now > fox.restUntil) {
+        // pick somewhere new along the visible shore, a good walk away
+        var t = p.x0 + Math.random() * (p.x1 - p.x0), far = Math.min(160, (p.x1 - p.x0) / 3);
+        if (Math.abs(t - fox.x) < far) t = fox.x < (p.x0 + p.x1) / 2 ? p.x1 - Math.random() * far / 2 : p.x0 + Math.random() * far / 2;
+        fox.target = t;
+        fox.dir = t > fox.x ? 1 : -1;
+      }
+    } else {
+      var step = 46 * dt * fox.dir;
+      if (Math.abs(fox.target - fox.x) <= Math.abs(step)) { fox.x = fox.target; fox.restUntil = now + 5000 + Math.random() * 9000; }
+      else fox.x += step;
     }
-    requestAnimationFrame(step);
+    placeFox(now);
   }
 
   /* ---------- Secrets ---------- */
 
-  var SECRETS = ["tower", "owl", "snowman", "canoe", "moon", "fox"];
+  var SECRETS = ["bell", "owl", "fox", "deer", "skater"];
   var found = {};
-  try { found = JSON.parse(localStorage.getItem("nic-lake-found") || "{}") || {}; } catch (e) { found = {}; }
+  try { found = JSON.parse(localStorage.getItem("nic-village-found") || "{}") || {}; } catch (e) { found = {}; }
   var toastTimer;
-
+  // Park the toast where it hides the least. It never covers the title words, the navigation pills, the bell or the
+  // scroll cue, and it stays below the title. It covers as little as it can of the owl, deer, fox and bell, the hut,
+  // the skaters (where they are now, and the ice they will skate across) and the banner. It tries a grid of spots:
+  // under the banner in the middle first, then the sides and lower down.
+  function placeToast() {
+    var t = $("toast"), hero = $("top");
+    if (!t || !hero) return;
+    var hr = hero.getBoundingClientRect(), W = hero.clientWidth, H = hero.clientHeight, s = view.s;
+    var rel = function (n, pad) { var q = n.getBoundingClientRect(); pad = pad || 0; return { l: q.left - hr.left - pad, r: q.right - hr.left + pad, t: q.top - hr.top - pad, b: q.bottom - hr.top + pad }; };
+    var scene = function (l, tp, r, b, pad) { pad = pad || 0; return { l: view.ox + l * s - pad, t: view.oy + tp * s - pad, r: view.ox + r * s + pad, b: view.oy + b * s + pad }; };
+    var hard = titleBoxes.slice(), soft = [], navB = 0, wordsB = 0;
+    titleBoxes.forEach(function (q) { wordsB = Math.max(wordsB, q.b); });
+    Array.prototype.forEach.call(document.querySelectorAll(".nav .logo, .nav nav, .nav .found"), function (n) { var q = rel(n, 4); hard.push(q); navB = Math.max(navB, q.b); });
+    var bell = document.querySelector("#bell .bell-body");
+    if (bell) hard.push(rel(bell, 8));
+    ["owl", "deer", "fox", "bell"].forEach(function (id) { var n = $(id); n = n && (n.firstElementChild || n); if (n) soft.push([rel(n, 12), 8]); });   // their hit areas, with room round them (an owl's ear tufts)
+    soft.push([scene(875, 425, 1035, 600, 4), 3]);                     // the hut
+    if (rink && rink.boxes) rink.boxes().forEach(function (b) { soft.push([scene(b[0], b[1], b[2], b[3], 8), 3]); });
+    soft.push([scene(-1e4, layout.ice.farY - layout.ice.skaterHeightFar, 1e4, 1e4), 0.4]);   // the ice, from the far skaters' heads down
+    if (titlePaper) soft.push([titlePaper, 1]);
+    var cue = document.querySelector(".scroll-cue"), cueT = cue ? rel(cue).t : H;
+    var tw = Math.min(t.offsetWidth, W - 8), th = t.offsetHeight;
+    var over = function (q, l, top) { return Math.max(0, Math.min(l + tw, q.r) - Math.max(l, q.l)) * Math.max(0, Math.min(top + th, q.b) - Math.max(top, q.t)); };
+    var top0 = Math.max(navB + 4, wordsB + 8), top1 = cueT - th - 8, pref = Math.max(top0, titleBottom + 10);
+    var tops = [pref], step = Math.max(8, th / 3);
+    for (var y = top0; y <= top1; y += step) tops.push(y);
+    var side = Math.max(0, W / 2 - 16 - tw / 2), mids = [W / 2, W / 2 - side, W / 2 + side, W / 2 - side / 2, W / 2 + side / 2];
+    var best = null, bestCost = 1e18;
+    tops.forEach(function (top) {
+      mids.forEach(function (cx) {
+        var l = cx - tw / 2, cost = 0;
+        hard.forEach(function (q) { cost += 1e4 * over(q, l, top); });
+        soft.forEach(function (q) { cost += q[1] * over(q[0], l, top); });
+        if (top < top0 || top > top1) cost += 1e8;
+        cost += 4 * Math.abs(cx - W / 2) + 2 * Math.abs(top - pref);   // otherwise, under the banner in the middle
+        if (cost < bestCost - 0.5) { best = [cx, top]; bestCost = cost; }
+      });
+    });
+    if (best) { t.style.left = Math.round(best[0]) + "px"; t.style.top = Math.round(best[1]) + "px"; }
+  }
   function say(text) {
     var t = $("toast");
     t.textContent = text;
+    placeToast();
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove("show"); }, 4800);
+    toastTimer = setTimeout(function () { t.classList.remove("show"); }, 4500);
   }
   function updateFound() {
     var n = SECRETS.filter(function (k) { return found[k]; }).length;
     $("foundCount").textContent = n;
-    if (n === SECRETS.length) {
-      var box = $("found");
-      box.classList.add("all");
-      box.innerHTML = "All <b>6</b> secrets found";
-    }
+    if (n === SECRETS.length) { $("found").classList.add("all"); $("found").innerHTML = "All <b>5</b> found"; }
   }
   function discover(id) {
-    var first = !found[id];
-    if (first) {
+    if (!found[id]) {
       found[id] = true;
-      try { localStorage.setItem("nic-lake-found", JSON.stringify(found)); } catch (e) { /* storage off */ }
+      try { localStorage.setItem("nic-village-found", JSON.stringify(found)); } catch (e) { /* storage off */ }
       updateFound();
     }
-    var node = $(id);
-    if (!reduceMotion && node.getBBox) {
-      var b = node.getBBox();
-      var c = el("circle", { cx: b.x + b.width / 2, cy: b.y + b.height / 2, r: 10, class: "sparkle", "pointer-events": "none" }, node.parentNode);
-      setTimeout(function () { c.remove(); }, 1100);
-    }
   }
-
   var actions = {
     owl: function () {
       var h = $("owlHead"); h.classList.add("turn");
       setTimeout(function () { h.classList.remove("turn"); }, 1600);
-      say("The owl has watched the skaters all night.");
-    },
-    snowman: function () {
-      var h = $("hat"); h.classList.add("tip");
-      setTimeout(function () { h.classList.remove("tip"); }, 1400);
-      say("The snowman tips its hat to you.");
-    },
-    canoe: function () { say("A red canoe waits under the snow for summer."); },
-    moon: function () {
-      var a = $("aurora"); a.classList.add("bright");
-      setTimeout(function () { a.classList.remove("bright"); }, 4000);
-      say("The northern lights brighten for the moon.");
+      say("The owl has been watching the skaters all evening.");
     },
     fox: function () {
-      if (!fox.walking) walkFox();
-      fox.hop = true; setTimeout(function () { fox.hop = false; }, 260);
+      fox.hop = performance.now() + 420;
+      fox.restUntil = 0;
       say("A fox hurries home along the shore.");
     },
-    tower: function () { music.toggle(); }
+    deer: function () {
+      var h = $("deerHead"); h.classList.add("up");
+      setTimeout(function () { h.classList.remove("up"); }, 2000);
+      // the glacier is only drawn on the wide crop (style.css hides it on phones)
+      say(layoutName === "tall" ? "The deer looks up at the snowy peaks." : "The deer looks up at the glacier.");
+    },
+    bell: function () {
+      var b = $("bell");
+      b.classList.remove("ringing"); void b.getBBox(); b.classList.add("ringing");
+      music.toggle();
+    }
   };
-
-  function bindHotspots() {
-    SECRETS.forEach(function (id) {
+  function bindSecrets() {
+    ["bell", "owl", "fox", "deer"].forEach(function (id) {
       var node = $(id);
       function go(e) { e.stopPropagation(); actions[id](); discover(id); }
       node.addEventListener("click", go);
-      node.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); }
-      });
+      node.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
     });
-    $("scene").addEventListener("click", function (e) { gust(e.clientX); });
+    $("heroBack").addEventListener("click", function (e) { gust(e.clientX); });
     updateFound();
   }
 
@@ -485,7 +2582,6 @@
 
   var music = (function () {
     var NOTE = { D3: 50, "F#3": 54, G3: 55, A3: 57, B3: 59, "C#4": 61, D4: 62, E4: 64, "F#4": 66, G4: 67, A4: 69, B4: 71, "C#5": 73, D5: 74, E5: 76, "F#5": 78, G5: 79, A5: 81, B5: 83, D6: 86 };
-    // A gentle waltz in D major, written for this site. [note, beats]
     var melody = [
       ["A5", 1], ["F#5", 1], ["D5", 1], ["E5", 1.5], ["F#5", 0.5], ["E5", 1],
       ["D5", 1], ["F#5", 1], ["B5", 1], ["A5", 2], ["G5", 1],
@@ -496,7 +2592,6 @@
       ["D5", 1], ["B4", 1], ["G5", 1], ["F#5", 2], ["A5", 1],
       ["G5", 1], ["E5", 1], ["C#5", 1], ["D5", 3]
     ];
-    // One chord per bar: bass on beat 1, two soft chord tones on beats 2 and 3.
     var chords = [
       ["D3", "F#4", "A4"], ["A3", "E4", "C#5"], ["B3", "D4", "F#4"], ["G3", "D4", "B4"],
       ["D3", "F#4", "A4"], ["G3", "D4", "B4"], ["A3", "E4", "C#5"], ["A3", "E4", "G4"],
@@ -505,14 +2600,12 @@
     ];
     var beat = 60 / 88;
     var ctx, master, delay, playing = false, timer, noteTimer, nextTime = 0, step = 0, events = [];
-
     function freq(n) { return 440 * Math.pow(2, (NOTE[n] - 69) / 12); }
     function ping(n, when, vol, len) {
-      var f = freq(n);
+      var fr = freq(n);
       [[1, 1], [4.02, 0.12], [2, 0.18]].forEach(function (p) {
         var o = ctx.createOscillator(), g = ctx.createGain();
-        o.type = "sine";
-        o.frequency.value = f * p[0];
+        o.type = "sine"; o.frequency.value = fr * p[0];
         g.gain.setValueAtTime(0.0001, when);
         g.gain.exponentialRampToValueAtTime(vol * p[1], when + 0.008);
         g.gain.exponentialRampToValueAtTime(0.0001, when + len / (p[0] > 1 ? 2.5 : 1));
@@ -522,22 +2615,19 @@
     }
     function schedule() {
       while (nextTime < ctx.currentTime + 0.4) {
-        var beatInLoop = step % 48;
-        events.forEach(function (e) {
-          if (e.at >= beatInLoop && e.at < beatInLoop + 0.5) ping(e.n, nextTime + (e.at - beatInLoop) * beat, 0.16, 2.2);
-        });
-        if (beatInLoop % 1 === 0) {
-          var c = chords[Math.floor(beatInLoop / 3) % 16], pos = beatInLoop % 3;
+        var bl = step % 48;
+        events.forEach(function (e) { if (e.at >= bl && e.at < bl + 0.5) ping(e.n, nextTime + (e.at - bl) * beat, 0.16, 2.2); });
+        if (bl % 1 === 0) {
+          var c = chords[Math.floor(bl / 3) % 16], pos = bl % 3;
           if (pos === 0) ping(c[0], nextTime, 0.11, 2.6);
           else { ping(c[1], nextTime, 0.035, 1.2); ping(c[2], nextTime, 0.035, 1.2); }
         }
-        nextTime += beat * 0.5;
-        step += 0.5;
+        nextTime += beat * 0.5; step += 0.5;
       }
     }
     function floatNote() {
       if (!playing || reduceMotion) return;
-      var t = el("text", { x: 806 + Math.random() * 10, y: 280, class: "note" }, $("notes"));
+      var t = el("text", { x: f(10 + Math.random() * 14), y: 10, class: "note" }, $("notes"));
       t.textContent = Math.random() > 0.5 ? "♪" : "♫";
       setTimeout(function () { t.remove(); }, 3700);
     }
@@ -562,11 +2652,10 @@
       master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
       master.gain.linearRampToValueAtTime(0.9, ctx.currentTime + 1.5);
       nextTime = ctx.currentTime + 0.1; step = 0;
-      timer = setInterval(schedule, 100);
-      schedule();
+      timer = setInterval(schedule, 100); schedule();
       noteTimer = setInterval(floatNote, 1300);
       setState(true);
-      say("Music on. Tap the tower again to stop.");
+      say("Music on. Ring the bell again to stop.");
     }
     function stop() {
       playing = false;
@@ -581,152 +2670,416 @@
       say("Music off.");
     }
     function setState(on) {
-      var t = $("tower");
-      t.setAttribute("aria-pressed", on ? "true" : "false");
-      t.setAttribute("aria-label", on ? "Castle tower: stop music" : "Castle tower: play music");
-      t.classList.toggle("music-on", on);
+      var b = $("bell");
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.setAttribute("aria-label", on ? "Golden bell: stop music" : "Golden bell: play music");
     }
     return { toggle: function () { playing ? stop() : start(); } };
   })();
 
-  /* ---------- Artifact cards ---------- */
+  /* ---------- Shops: one for each card ---------- */
 
   var ART = {
-    castle:
-      '<path d="M18,80 Q60,72 102,80" stroke="#8cc4ff" stroke-width="1.4" fill="none"/>' +
-      '<rect x="34" y="50" width="52" height="26" fill="rgba(243,238,251,.85)"/>' +
-      '<rect x="54" y="30" width="12" height="46" fill="#f3eefb"/>' +
-      '<path d="M51,31 L60,8 L69,31 Z" fill="#4b51b6"/>' +
-      '<rect x="30" y="42" width="8" height="34" fill="#e3dcf2"/><path d="M28,43 L34,26 L40,43 Z" fill="#4b51b6"/>' +
-      '<rect x="82" y="42" width="8" height="34" fill="#e3dcf2"/><path d="M80,43 L86,26 L92,43 Z" fill="#4b51b6"/>' +
-      '<path d="M32,52 L40,46 L80,46 L88,52 Z" fill="#363c98"/>' +
-      '<g fill="#ffcf73"><rect x="42" y="58" width="3" height="5"/><rect x="49" y="58" width="3" height="5"/><rect x="68" y="58" width="3" height="5"/><rect x="75" y="58" width="3" height="5"/><rect x="58" y="38" width="4" height="7"/><path d="M57,76 V69 Q60,65 63,69 V76 Z"/></g>' +
-      '<path d="M60,8 V2" stroke="#e6b862" stroke-width="1.4"/>',
+    mountain:
+      '<path d="M8,64 L36,26 L50,42 L66,18 L96,64 Z" fill="#cfe3ff"/>' +
+      '<path d="M66,18 L74,30 L68,28 L62,34 L58,28 Z M36,26 L42,34 L36,32 L31,36 Z" fill="#ffffff"/>' +
+      '<path d="M4,64 H116" stroke="#7be3ff" stroke-width="1.6"/>' +
+      '<path d="M14,74 Q60,66 106,74 M30,82 Q60,76 90,82" stroke="#7be3ff" stroke-width="1.2" fill="none" opacity=".8"/>' +
+      '<path d="M40,78 C55,70 80,72 72,79 C66,84 50,82 58,76" stroke="#ffffff" stroke-width="1.2" fill="none"/>' +
+      '<path d="M100,40 L101.5,44 L106,45 L101.5,46.5 L100,51 L98.5,46.5 L94,45 L98.5,44 Z" fill="#fff2c8"/>',
     tracker:
-      '<rect x="14" y="10" width="92" height="70" rx="8" fill="rgba(140,196,255,.1)" stroke="#c3c9dc" stroke-width="1.2"/>' +
-      '<path d="M26,66 H94" stroke="#c3c9dc" stroke-opacity=".5"/>' +
-      '<rect x="30" y="52" width="9" height="14" rx="2" fill="#8cc4ff" opacity=".8"/>' +
-      '<rect x="45" y="46" width="9" height="20" rx="2" fill="#9b7be6" opacity=".9"/>' +
-      '<rect x="60" y="40" width="9" height="26" rx="2" fill="#d4506e" opacity=".9"/>' +
-      '<rect x="75" y="30" width="9" height="36" rx="2" fill="#e6b862"/>' +
-      '<path d="M34,48 L49,42 L64,35 L79,24" stroke="#f7e8c4" stroke-width="1.5" fill="none" stroke-dasharray="3 3"/>' +
-      '<path d="M79,15 L81,20 L86,20 L82,23 L84,28 L79,25 L74,28 L76,23 L72,20 L77,20 Z" fill="#f7e8c4"/>',
+      '<rect x="14" y="10" width="92" height="70" rx="8" fill="rgba(255,255,255,.08)" stroke="#d8e0f2" stroke-width="1.2"/>' +
+      '<path d="M26,66 H94" stroke="#d8e0f2" stroke-opacity=".5"/>' +
+      '<rect x="30" y="52" width="9" height="14" rx="2" fill="#7be3ff"/>' +
+      '<rect x="45" y="46" width="9" height="20" rx="2" fill="#c79be6"/>' +
+      '<rect x="60" y="40" width="9" height="26" rx="2" fill="#e0457a"/>' +
+      '<rect x="75" y="30" width="9" height="36" rx="2" fill="#f2b83f"/>' +
+      '<path d="M34,48 L49,42 L64,35 L79,24" stroke="#fff2c8" stroke-width="1.5" fill="none" stroke-dasharray="3 3"/>' +
+      '<path d="M79,15 L81,20 L86,20 L82,23 L84,28 L79,25 L74,28 L76,23 L72,20 L77,20 Z" fill="#fff2c8"/>',
     coach:
-      '<g stroke="#8cc4ff" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M60,74 L61,56 L59,40 L76,30 M59,40 L44,30 L30,22 M76,30 L90,28 M75,31 L66,20"/></g>' +
-      '<g fill="#f7e8c4"><circle cx="60" cy="74" r="2.4"/><circle cx="61" cy="56" r="2.4"/><circle cx="59" cy="40" r="2.4"/><circle cx="76" cy="30" r="2.4"/><circle cx="44" cy="30" r="2.4"/><circle cx="30" cy="22" r="2.4"/><circle cx="90" cy="28" r="2.4"/><circle cx="66" cy="20" r="2.4"/></g>' +
-      '<circle cx="82" cy="24" r="4" fill="none" stroke="#f7e8c4" stroke-width="1.4"/>' +
-      '<path d="M60,78 V8" stroke="#e6b862" stroke-dasharray="3 4" stroke-width="1"/>' +
-      '<path d="M60,58 A18,18 0 0 0 46,48" stroke="#d4506e" stroke-width="1.4" fill="none"/>' +
-      '<path d="M50,80 H72" stroke="#c3c9dc" stroke-width="1.4" stroke-linecap="round"/>',
+      '<g stroke="#7be3ff" stroke-width="1.8" fill="none" stroke-linecap="round"><path d="M60,74 L61,56 L59,40 L76,30 M59,40 L44,30 L30,22 M76,30 L90,28 M75,31 L66,20"/></g>' +
+      '<g fill="#fff2c8"><circle cx="60" cy="74" r="2.6"/><circle cx="61" cy="56" r="2.6"/><circle cx="59" cy="40" r="2.6"/><circle cx="76" cy="30" r="2.6"/><circle cx="44" cy="30" r="2.6"/><circle cx="30" cy="22" r="2.6"/><circle cx="90" cy="28" r="2.6"/><circle cx="66" cy="20" r="2.6"/></g>' +
+      '<circle cx="82" cy="24" r="4" fill="none" stroke="#fff2c8" stroke-width="1.4"/>' +
+      '<path d="M60,80 V8" stroke="#f2b83f" stroke-dasharray="3 4" stroke-width="1"/>' +
+      '<path d="M60,58 A18,18 0 0 0 46,48" stroke="#e0457a" stroke-width="1.6" fill="none"/>',
     language:
-      '<path d="M14,16 H70 Q76,16 76,22 V46 Q76,52 70,52 H34 L24,62 V52 H20 Q14,52 14,46 V22 Q14,16 20,16 Z" fill="rgba(155,123,230,.3)" stroke="#9b7be6" stroke-width="1.4"/>' +
-      '<text x="45" y="42" text-anchor="middle" font-family="Cinzel, Georgia, serif" font-size="20" font-weight="700" fill="#f7e8c4">Aa</text>' +
-      '<path d="M50,40 H100 Q106,40 106,46 V66 Q106,72 100,72 H96 V80 L88,72 H56 Q50,72 50,66 V46 Q50,40 56,40 Z" fill="rgba(140,196,255,.25)" stroke="#8cc4ff" stroke-width="1.4"/>' +
-      '<text x="78" y="62" text-anchor="middle" font-family="Mulish, sans-serif" font-size="15" font-weight="700" fill="#f4f6ff">Hi!</text>',
+      '<path d="M14,16 H70 Q76,16 76,22 V46 Q76,52 70,52 H34 L24,62 V52 H20 Q14,52 14,46 V22 Q14,16 20,16 Z" fill="rgba(199,155,230,.35)" stroke="#c79be6" stroke-width="1.6"/>' +
+      '<text x="45" y="42" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="17" font-weight="800" fill="#fff2c8">Aa</text>' +
+      '<path d="M50,40 H100 Q106,40 106,46 V66 Q106,72 100,72 H96 V80 L88,72 H56 Q50,72 50,66 V46 Q50,40 56,40 Z" fill="rgba(123,227,255,.25)" stroke="#7be3ff" stroke-width="1.6"/>' +
+      '<text x="78" y="62" text-anchor="middle" font-family="Nunito, sans-serif" font-size="15" font-weight="800" fill="#ffffff">Hi!</text>',
     calendar:
-      '<rect x="16" y="14" width="88" height="66" rx="8" fill="rgba(140,196,255,.1)" stroke="#c3c9dc" stroke-width="1.2"/>' +
-      '<path d="M16,30 H104" stroke="#c3c9dc" stroke-opacity=".6"/>' +
-      '<path d="M36,8 V20 M84,8 V20" stroke="#e6b862" stroke-width="2.4" stroke-linecap="round"/>' +
+      '<rect x="16" y="14" width="88" height="66" rx="8" fill="rgba(255,255,255,.08)" stroke="#d8e0f2" stroke-width="1.2"/>' +
+      '<path d="M16,30 H104" stroke="#d8e0f2" stroke-opacity=".6"/>' +
+      '<path d="M36,8 V20 M84,8 V20" stroke="#f2b83f" stroke-width="2.4" stroke-linecap="round"/>' +
       (function () {
         var s = "";
         for (var r = 0; r < 4; r++) for (var c = 0; c < 6; c++) {
           var hot = (r === 1 && c === 3) || (r === 2 && c === 1) || (r === 3 && c === 4);
-          s += '<rect x="' + (24 + c * 13.5) + '" y="' + (38 + r * 10) + '" width="9" height="6" rx="1.5" fill="' + (hot ? "#e6b862" : "rgba(195,201,220,.35)") + '"/>';
+          s += '<rect x="' + (24 + c * 13.5) + '" y="' + (38 + r * 10) + '" width="9" height="6" rx="1.5" fill="' + (hot ? "#f2b83f" : "rgba(216,224,242,.35)") + '"/>';
         }
         return s;
       })()
   };
-  ART.globe = ART.castle;
+  ART.castle = ART.globe = ART.mountain;
+
+  var NEON = {
+    mountain: "M-12,8 L-3,-5 L2,1 L6,-4 L13,8 Z",
+    tracker: "M-10,9 V1 M-3,9 V-4 M4,9 V-9 M11,9 V-2",
+    coach: "M0,-13 Q2,-2 13,0 Q2,2 0,13 Q-2,2 -13,0 Q-2,-2 0,-13 Z",
+    language: "M-12,-9 H12 V5 H-2 L-8,11 V5 H-12 Z",
+    calendar: "M-11,-7 H11 V10 H-11 Z M-11,-2 H11 M-5,-12 V-5 M5,-12 V-5"
+  };
+  NEON.castle = NEON.globe = NEON.mountain;
+
+  var PALETTE = [
+    { wall: "#b8433f", trim: "#fbe9d0", awn: "#e0457a", door: "#5a2430", neon: "#ffd36b" },
+    { wall: "#3d5bb5", trim: "#eef2ff", awn: "#2b3f8f", door: "#24305e", neon: "#ff8fc8" },
+    { wall: "#6b4aa8", trim: "#f3ebff", awn: "#8f6bd6", door: "#3a2660", neon: "#7be3ff" },
+    { wall: "#d9773a", trim: "#fff1e0", awn: "#c0532a", door: "#5a2c18", neon: "#9fb8ff" },
+    { wall: "#2f7f8f", trim: "#e6fbff", awn: "#1f5f6f", door: "#173f4a", neon: "#ffd36b" }
+  ];
+
+  function shopSVG(a, i) {
+    var p = PALETTE[i % PALETTE.length], round = i % 2 === 1, id = "s" + i;
+    var art = ART[a.art] || ART.mountain, neon = NEON[a.art] || NEON.mountain;
+    var bulbs = "", colors = ["#ffd36b", "#ff8fc8", "#7be3ff", "#ff7a59"];
+    for (var b = 0; b < 13; b++) {
+      bulbs += '<circle class="bulb" style="animation-delay:' + f(b * 0.23) + 's" cx="' + (24 + b * 16) + '" cy="' + (round ? 132 : 130) + '" r="3.4" fill="' + colors[b % 4] + '"/>';
+    }
+    var stripes = "";
+    for (var s = 0; s < 8; s++) {
+      stripes += '<path d="M' + (28 + s * 15.5) + ',178 h15.5 v20 a7.75,7.75 0 0 1 -15.5,0 Z" fill="' + (s % 2 ? p.trim : p.awn) + '"/>';
+    }
+    var roof = round
+      ? '<path d="M12,128 Q12,44 120,44 Q228,44 228,128 Z" fill="' + p.door + '"/>' +
+        '<path d="M4,132 Q4,32 120,32 Q236,32 236,132 Q226,144 212,134 Q198,146 182,136 Q166,148 150,136 Q134,148 118,136 Q102,148 86,136 Q70,146 54,134 Q38,144 24,132 Q12,142 4,132 Z" fill="#ffffff"/>' +
+        '<path d="M14,120 Q60,104 120,104 Q180,104 226,120" stroke="#c9d8f5" stroke-width="5" fill="none" opacity=".8"/>'
+      : '<path d="M8,128 L120,40 L232,128 Z" fill="' + p.door + '"/>' +
+        '<path d="M0,132 Q2,116 18,110 L120,26 L222,110 Q238,116 240,132 Q228,144 214,134 Q200,146 184,136 Q168,148 150,136 Q134,148 118,136 Q100,148 84,136 Q68,146 52,134 Q36,144 24,132 Q10,142 0,132 Z" fill="#ffffff"/>' +
+        '<path d="M30,116 L120,46 L210,116" stroke="#c9d8f5" stroke-width="5" fill="none" opacity=".7"/>';
+    return '<svg viewBox="0 0 240 330" aria-hidden="true">' +
+      '<defs><linearGradient id="' + id + 'in" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a2a4a"/><stop offset="1" stop-color="#22142e"/></linearGradient>' +
+      '<radialGradient id="' + id + 'gl" cx=".5" cy=".2" r=".75"><stop offset="0" stop-color="#ffd58a" stop-opacity=".95"/><stop offset=".55" stop-color="#ff9f6a" stop-opacity=".35"/><stop offset="1" stop-color="#ff9f6a" stop-opacity="0"/></radialGradient></defs>' +
+      (i % 2 === 0 ? '<rect x="166" y="46" width="20" height="56" fill="#3a2a40"/><rect x="162" y="40" width="28" height="9" rx="3" fill="#ffffff"/><g class="smoke"><circle cx="176" cy="30" r="6"/><circle cx="182" cy="14" r="8"/><circle cx="178" cy="-4" r="10"/></g>' : "") +
+      roof +
+      '<rect x="18" y="128" width="204" height="202" fill="' + p.wall + '"/>' +
+      '<path d="M44,128 V330 M74,128 V330 M104,128 V330 M134,128 V330 M164,128 V330 M194,128 V330" stroke="#000" stroke-opacity=".08" stroke-width="2"/>' +
+      bulbs +
+      '<rect class="shop-sign" x="48" y="142" width="144" height="28" rx="5" fill="' + p.trim + '"/>' +
+      '<text x="120" y="161" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="12" font-weight="800" letter-spacing="1.5" fill="' + p.wall + '">ARTIFACT ' + (a.number) + '</text>' +
+      stripes +
+      '<rect x="30" y="200" width="116" height="96" fill="url(#' + id + 'in)"/>' +
+      '<rect class="win-glow" x="30" y="200" width="116" height="96" fill="url(#' + id + 'gl)"/>' +
+      '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + art + '</svg>' +
+      '<path d="M30,200 h116 v96 h-116 Z M88,200 V296 M30,248 H146" fill="none" stroke="' + p.trim + '" stroke-width="5"/>' +
+      '<rect x="24" y="294" width="128" height="10" rx="5" fill="#ffffff"/>' +
+      '<path class="door-light" d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="#ffd58a"/>' +
+      '<g class="shop-door"><path d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="' + p.door + '"/>' +
+      '<path d="M172,256 V234 Q172,220 186,220 Q200,220 200,234 V256 Z" fill="#ffd58a" opacity=".9"/>' +
+      '<circle cx="202" cy="290" r="3" fill="#f2b83f"/></g>' +
+      '<g transform="translate(186,188)" filter="url(#fNeon)"><path d="' + neon + '" fill="none" stroke="' + p.neon + '" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>' +
+      '<ellipse cx="88" cy="328" rx="78" ry="9" fill="#ffc46b" opacity=".35"/>' +
+      '<path d="M-6,330 Q40,312 90,322 Q140,312 190,322 Q226,314 246,326 V334 H-6 Z" fill="#ffffff"/>' +
+      "</svg>";
+  }
 
   function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (ch) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
-    });
-  }
-  function teaser(text) {
-    var m = String(text).match(/^.*?[.!?](\s|$)/);
-    return m ? m[0].trim() : text;
+    return String(s).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; });
   }
 
-  function renderCards() {
-    var box = $("cards"), list = window.ARTIFACTS || [];
-    if (!list.length) {
-      box.innerHTML = '<p class="about">No cards found. Check cards.js for a missing quote or comma.</p>';
-      return;
-    }
+  function renderShops() {
+    var box = $("street"), list = window.ARTIFACTS || [];
+    if (!list.length) { box.innerHTML = '<p class="load-note">No cards found. Check cards.js for a missing quote or comma.</p>'; return; }
     box.innerHTML = list.map(function (a, i) {
       var done = a.status === "done";
-      return '<button type="button" class="card ' + (done ? "done" : "idea") + '" data-i="' + i + '" aria-haspopup="dialog">' +
-        '<svg class="card-art" viewBox="0 0 120 90" aria-hidden="true">' + (ART[a.art] || ART.castle) + "</svg>" +
-        '<span class="card-head"><span class="card-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Live" : "Idea") + "</span></span>" +
-        "<h3>" + esc(a.title) + "</h3>" +
-        '<span class="teaser">' + esc(teaser(a.reflection)) + "</span>" +
-        '<span class="open">Open card &rarr;</span>' +
+      return '<button type="button" class="shop" data-i="' + i + '" aria-label="Artifact ' + esc(a.number) + ': ' + esc(a.title) + '. Step inside">' +
+        shopSVG(a, i) +
+        '<span class="shop-label"><span class="shop-head"><span class="shop-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Open" : "Idea") + "</span></span>" +
+        '<span class="shop-title">' + esc(a.title) + "</span>" +
+        '<span class="shop-open">Step inside &rarr;</span></span>' +
         "</button>";
     }).join("");
     box.addEventListener("click", function (e) {
-      var btn = e.target.closest(".card");
-      if (btn) openCard(list[+btn.getAttribute("data-i")]);
+      var btn = e.target.closest(".shop");
+      if (btn) enterShop(+btn.getAttribute("data-i"), true);
     });
   }
 
-  function openCard(a) {
-    var done = a.status === "done";
-    var link = a.link
-      ? '<a class="card-link" href="' + esc(a.link) + '"' + (/^https?:/.test(a.link) ? ' target="_blank" rel="noopener"' : "") + ">" + esc(a.linkLabel || "Open artifact") + " &rarr;</a>"
-      : '<span class="card-link pending">Link added when it\'s built</span>';
-    $("dlgInner").innerHTML =
-      '<svg class="dlg-art" viewBox="0 0 120 90" aria-hidden="true">' + (ART[a.art] || ART.castle) + "</svg>" +
-      '<span class="card-head"><span class="card-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Live" : "Idea") + "</span></span>" +
-      '<h3 id="dlgTitle">' + esc(a.title) + "</h3>" +
-      '<span class="label">' + (done ? "Reflection" : "The idea") + "</span>" +
-      "<p>" + esc(a.reflection) + "</p>" + link;
-    var d = $("cardDialog");
-    if (d.showModal) d.showModal(); else d.setAttribute("open", "");
+  /* ---------- Inside a shop: the shopkeeper and the menu board ---------- */
+
+  var KEEPERS = [
+    { skin: "#f1c7a5", hair: "#5a2e1c", top: "#fbe9d0", style: "beanie", hat: "#e0457a" },
+    { skin: "#8d5a3c", hair: "#1d1420", top: "#f2b83f", style: "bun", hat: "" },
+    { skin: "#e3b08a", hair: "#2a1b30", top: "#7be3ff", style: "curly", hat: "" },
+    { skin: "#5b3a2a", hair: "#151018", top: "#fff1e0", style: "glasses", hat: "" },
+    { skin: "#f5d3b8", hair: "#c98a4a", top: "#e6fbff", style: "earmuffs", hat: "#e0457a" }
+  ];
+
+  // An original, friendly shopkeeper drawn from the waist up (the counter hides the rest).
+  function keeperSVG(i) {
+    var k = KEEPERS[i % KEEPERS.length], p = PALETTE[i % PALETTE.length];
+    var hairBack = "", hairFront = "", extra = "";
+    if (k.style === "beanie") {
+      hairBack = '<path d="M60,118 C56,150 64,170 74,176 L146,176 C156,170 164,150 160,118 Z" fill="' + k.hair + '"/>';
+      hairFront = '<path d="M60,104 C58,52 162,52 160,104 Z" fill="' + k.hat + '"/><rect x="56" y="96" width="108" height="18" rx="9" fill="#fbe9d0"/>' +
+        '<path d="M70,96 V112 M84,96 V114 M98,96 V114 M112,96 V114 M126,96 V114 M140,96 V114 M154,96 V112" stroke="#e8cfae" stroke-width="3"/><circle cx="110" cy="48" r="13" fill="#fbe9d0"/>';
+    } else if (k.style === "bun") {
+      hairFront = '<circle cx="110" cy="56" r="20" fill="' + k.hair + '"/><path d="M62,112 C56,64 164,64 158,112 C150,88 132,78 110,80 C88,78 70,88 62,112 Z" fill="' + k.hair + '"/>';
+    } else if (k.style === "curly") {
+      for (var c = 0; c < 11; c++) {
+        var ang = Math.PI * (1.05 + c * 0.09), cx = 110 + Math.cos(ang) * 50, cy = 104 + Math.sin(ang) * 50;
+        hairFront += '<circle cx="' + f(cx) + '" cy="' + f(cy) + '" r="15" fill="' + k.hair + '"/>';
+      }
+      hairBack = '<circle cx="64" cy="124" r="15" fill="' + k.hair + '"/><circle cx="156" cy="124" r="15" fill="' + k.hair + '"/>';
+    } else if (k.style === "glasses") {
+      hairFront = '<path d="M62,108 C58,60 162,60 158,108 C146,90 124,84 104,88 C86,90 70,96 62,108 Z" fill="' + k.hair + '"/>';
+      extra = '<g fill="none" stroke="#f2b83f" stroke-width="3"><circle cx="92" cy="114" r="11"/><circle cx="128" cy="114" r="11"/><path d="M103,114 H117"/></g>';
+    } else {
+      hairBack = '<path d="M60,110 C54,160 62,186 70,196 L150,196 C158,186 166,160 160,110 Z" fill="' + k.hair + '"/>';
+      hairFront = '<path d="M62,110 C58,62 162,62 158,110 C150,92 128,82 110,84 C92,82 70,92 62,110 Z" fill="' + k.hair + '"/>';
+      extra = '<path d="M60,112 C60,56 160,56 160,112" fill="none" stroke="' + k.hat + '" stroke-width="7"/><circle cx="60" cy="118" r="15" fill="#fbe9d0"/><circle cx="160" cy="118" r="15" fill="#fbe9d0"/>';
+    }
+    return '<svg class="keeper-svg" viewBox="0 0 220 280" aria-hidden="true">' +
+      hairBack +
+      '<path d="M22,280 C22,206 58,184 110,184 C162,184 198,206 198,280 Z" fill="' + k.top + '"/>' +
+      '<path d="M66,200 L154,200 L162,280 L58,280 Z" fill="' + p.wall + '"/>' +
+      '<path d="M66,200 L88,186 M154,200 L132,186" stroke="' + p.wall + '" stroke-width="6" stroke-linecap="round"/>' +
+      '<rect x="88" y="234" width="44" height="26" rx="6" fill="#000" opacity=".14"/>' +
+      '<g transform="translate(110,224)" filter="url(#fNeon)"><path d="' + (NEON[(window.ARTIFACTS[i] || {}).art] || NEON.mountain) + '" fill="none" stroke="' + p.neon + '" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>' +
+      '<rect x="98" y="150" width="24" height="40" rx="10" fill="' + k.skin + '"/>' +
+      '<circle cx="62" cy="118" r="10" fill="' + k.skin + '"/><circle cx="158" cy="118" r="10" fill="' + k.skin + '"/>' +
+      '<circle cx="110" cy="112" r="49" fill="' + k.skin + '"/>' +
+      '<g class="keeper-eyes"><ellipse cx="92" cy="115" rx="4.5" ry="5.5" fill="#1d1420"/><ellipse cx="128" cy="115" rx="4.5" ry="5.5" fill="#1d1420"/></g>' +
+      '<ellipse cx="80" cy="132" rx="9" ry="5" fill="#ff7aa8" opacity=".45"/><ellipse cx="140" cy="132" rx="9" ry="5" fill="#ff7aa8" opacity=".45"/>' +
+      '<path d="M98,134 Q110,146 122,134" fill="none" stroke="#5a2430" stroke-width="3.5" stroke-linecap="round"/>' +
+      hairFront + extra +
+      "</svg>";
   }
 
-  function bindDialog() {
-    var d = $("cardDialog");
-    d.addEventListener("click", function (e) { if (e.target === d) d.close(); });
+  function interiorHTML(a, i) {
+    var p = PALETTE[i % PALETTE.length], done = a.status === "done";
+    var link = a.link
+      ? '<a class="board-link" href="' + esc(a.link) + '"' + (/^https?:/.test(a.link) ? ' target="_blank" rel="noopener"' : "") + ">" + esc(a.linkLabel || "Open the artifact") + " &rarr;</a>"
+      : '<span class="board-link pending">Link coming when it\'s built</span>';
+    var say = done ? "Welcome in! Everything about this one is on the board." : "Welcome! This shop is still an idea. Here's the plan.";
+    return '<div class="int-wall" style="--wall:' + p.wall + ";--neon:" + p.neon + ";--awn:" + p.awn + '">' +
+      '<svg class="int-decor" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true">' +
+        '<defs><radialGradient id="gLamp" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#ffd58a" stop-opacity=".55"/><stop offset="1" stop-color="#ffd58a" stop-opacity="0"/></radialGradient>' +
+        '<linearGradient id="gNight" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b1f5a"/><stop offset="1" stop-color="#6a4fae"/></linearGradient></defs>' +
+        // window with the snowy lake outside
+        '<rect x="40" y="170" width="250" height="470" rx="8" fill="url(#gNight)"/>' +
+        '<path d="M40,520 L110,430 L150,470 L210,390 L290,500 V640 H40 Z" fill="#cfe0ff"/><path d="M40,590 H290 V640 H40 Z" fill="#7be3ff" opacity=".6"/>' +
+        '<g class="int-snow" fill="#fff"><circle cx="80" cy="220" r="3"/><circle cx="150" cy="260" r="2.4"/><circle cx="230" cy="210" r="3"/><circle cx="120" cy="330" r="2"/><circle cx="250" cy="300" r="2.6"/><circle cx="190" cy="360" r="2"/></g>' +
+        '<path d="M40,170 h250 v470 h-250 Z M165,170 V640 M40,400 H290" fill="none" stroke="#8a6238" stroke-width="14"/>' +
+        '<rect x="24" y="636" width="282" height="18" rx="4" fill="#a8794a"/>' +
+        // pendant lamps
+        [560, 1180].map(function (x) {
+          return '<circle cx="' + x + '" cy="80" r="170" fill="url(#gLamp)"/><path d="M' + x + ',0 V44" stroke="#1a1418" stroke-width="3"/>' +
+            '<path d="M' + (x - 30) + ',80 L' + (x - 12) + ',42 H' + (x + 12) + ' L' + (x + 30) + ',80 Z" fill="#f2b83f"/><circle cx="' + x + '" cy="85" r="9" fill="#fff4d6"/>';
+        }).join("") +
+        // shelf with jars on the right
+        '<rect x="1330" y="330" width="250" height="14" rx="3" fill="#a8794a"/>' +
+        '<rect x="1350" y="276" width="40" height="54" rx="8" fill="#9fb8ff" opacity=".85"/><rect x="1404" y="292" width="34" height="38" rx="6" fill="#ffd36b" opacity=".9"/>' +
+        '<path d="M1460,330 V300 Q1460,286 1474,286 H1494 Q1508,286 1508,300 V330 Z" fill="#fbe9d0"/><circle cx="1540" cy="312" r="18" fill="#e0457a"/>' +
+        // hanging plant
+        '<path d="M1480,0 V120" stroke="#1a1418" stroke-width="3"/><path d="M1450,120 H1510 L1500,160 H1460 Z" fill="#c0532a"/>' +
+        '<g fill="#2f9a6a"><ellipse cx="1452" cy="176" rx="12" ry="26" transform="rotate(20 1452 176)"/><ellipse cx="1468" cy="200" rx="10" ry="30"/><ellipse cx="1492" cy="190" rx="11" ry="28" transform="rotate(-10 1492 190)"/><ellipse cx="1512" cy="172" rx="12" ry="24" transform="rotate(-24 1512 172)"/></g>' +
+      "</svg>" +
+      '<button type="button" class="int-back" id="intBack"><span aria-hidden="true">&larr;</span> Back to the village</button>' +
+      '<section class="board" aria-labelledby="boardTitle">' +
+        '<div class="row head"><span>Artifact ' + esc(a.number) + '</span><span class="tag">' + (done ? "&#9733; Open" : "&#9825; Idea") + "</span></div>" +
+        '<h2 class="row title" id="boardTitle">' + esc(a.title) + "</h2>" +
+        '<div class="row label">' + (done ? "Reflection" : "The idea") + "</div>" +
+        '<p class="board-text">' + esc(a.reflection) + "</p>" +
+        '<div class="row foot">' + link + "</div>" +
+      "</section>" +
+      '<div class="keeper"><p class="keeper-say">' + say + "</p>" + keeperSVG(i) + "</div>" +
+      '<div class="counter" aria-hidden="true">' +
+        '<svg class="counter-bell" viewBox="0 0 60 44"><path d="M8,36 Q8,10 30,10 Q52,10 52,36 Z" fill="#f2b83f"/><rect x="2" y="36" width="56" height="7" rx="3" fill="#c48a1e"/><circle cx="30" cy="7" r="5" fill="#f2b83f"/></svg>' +
+        '<svg class="counter-mug" viewBox="0 0 60 70"><path class="steam" d="M22,20 Q16,12 22,4 M34,20 Q28,12 34,4" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/><rect x="8" y="26" width="36" height="40" rx="7" fill="#fbe9d0"/><path d="M44,34 Q56,34 56,46 Q56,56 44,56" stroke="#fbe9d0" stroke-width="6" fill="none"/></svg>' +
+        '<svg class="counter-plant" viewBox="0 0 70 90"><g fill="#2f9a6a"><ellipse cx="22" cy="34" rx="9" ry="22" transform="rotate(-24 22 34)"/><ellipse cx="35" cy="26" rx="9" ry="25"/><ellipse cx="48" cy="34" rx="9" ry="22" transform="rotate(24 48 34)"/></g><path d="M14,56 H56 L50,88 H20 Z" fill="#c0532a"/></svg>' +
+      "</div>" +
+    "</div>";
+  }
+
+  var shopState = { open: -1, pushed: false, busy: false, later: false, backPending: false, backTimer: 0 };
+  function doorRect(i) {
+    var btn = document.querySelector('.shop[data-i="' + i + '"]');
+    var door = btn && btn.querySelector(".shop-door");
+    return door ? door.getBoundingClientRect() : null;
+  }
+  function insetFrom(r) {
+    var W = window.innerWidth, H = window.innerHeight;
+    return "inset(" + f(Math.max(0, r.top)) + "px " + f(Math.max(0, W - r.right)) + "px " + f(Math.max(0, H - r.bottom)) + "px " + f(Math.max(0, r.left)) + "px round 24px 24px 0 0)";
+  }
+  function setInert(on) {
+    ["top", "village"].forEach(function (id) { var n = $(id); if (n) { if (on) n.setAttribute("inert", ""); else n.removeAttribute("inert"); } });
+    var ft = document.querySelector(".footer");
+    if (ft) { if (on) ft.setAttribute("inert", ""); else ft.removeAttribute("inert"); }
+  }
+
+  function enterShop(i, animate) {
+    var list = window.ARTIFACTS || [], a = list[i];
+    if (!a || shopState.busy || shopState.open === i) return;
+    var box = $("interior");
+    box.innerHTML = interiorHTML(a, i);
+    $("intBack").addEventListener("click", function () { leaveShop(true); });
+    shopState.open = i;
+    if (animate) {
+      try { history.pushState({ shop: i }, "", "#artifact-" + a.number); shopState.pushed = true; } catch (e) { shopState.pushed = false; }
+    }
+    var btn = document.querySelector('.shop[data-i="' + i + '"]');
+    var r = doorRect(i);
+    var finish = function () {
+      document.documentElement.classList.add("in-shop");
+      setInert(true);
+      shopState.busy = false;
+      $("intBack").focus({ preventScroll: true });
+      syncLater();
+    };
+    box.hidden = false;
+    if (!animate || reduceMotion || !r || !box.animate) { box.style.clipPath = ""; finish(); return; }
+    shopState.busy = true;
+    if (btn) btn.classList.add("opening");
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    var vil = $("village"), vr = vil.getBoundingClientRect();
+    vil.style.transformOrigin = f(cx - vr.left) + "px " + f(cy - vr.top) + "px";
+    box.style.clipPath = insetFrom(r);
+    box.style.opacity = "0";
+    setTimeout(function () {
+      vil.animate([{ transform: "scale(1)" }, { transform: "scale(2.6)" }], { duration: 750, easing: "cubic-bezier(.5,0,.2,1)" });
+      var anim = box.animate([
+        { clipPath: insetFrom(r), opacity: 0.4 },
+        { clipPath: insetFrom(r), opacity: 1, offset: 0.25 },
+        { clipPath: "inset(0px 0px 0px 0px round 0px 0px 0 0)", opacity: 1 }
+      ], { duration: 750, easing: "cubic-bezier(.5,0,.2,1)" });
+      anim.onfinish = function () {
+        box.style.clipPath = ""; box.style.opacity = "";
+        if (btn) btn.classList.remove("opening");
+        finish();
+      };
+    }, 320);
+  }
+
+  function leaveShop(fromButton) {
+    if (shopState.open < 0 || shopState.busy) return;
+    if (fromButton && shopState.pushed) {
+      // popstate brings us back here. Only one step back, however often the button is pressed (a double click or a
+      // held Enter key would otherwise go back twice and leave the portfolio); if no popstate comes, close anyway.
+      if (shopState.backPending) return;
+      shopState.backPending = true;
+      clearTimeout(shopState.backTimer);
+      shopState.backTimer = setTimeout(function () {
+        if (!shopState.backPending) return;
+        shopState.backPending = false;
+        if (shopState.open >= 0 && !shopState.busy) { shopState.pushed = false; leaveShop(false); }
+      }, 1200);
+      history.back();
+      return;
+    }
+    var i = shopState.open, box = $("interior");
+    var btn = document.querySelector('.shop[data-i="' + i + '"]');
+    document.documentElement.classList.remove("in-shop");
+    setInert(false);
+    var done = function () {
+      box.hidden = true; box.innerHTML = ""; box.style.clipPath = ""; box.style.opacity = "";
+      shopState.open = -1; shopState.busy = false; shopState.pushed = false;
+      if (btn) btn.focus({ preventScroll: true });
+      syncLater();
+    };
+    // closed without going back through history (a deep link, or the history entry was not ours): tidy the URL
+    try { if (/^#artifact-/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search + "#village"); } catch (e) {}
+    // Bring the shop on screen first (a deep link opens it with the page at the top of the lake, far above the shop),
+    // so the door zooms shut onto a shop people can see and the focus comes back to a visible button. The jump is
+    // instant: html scrolls smoothly, and the door's place is measured straight after.
+    var br = btn && btn.getBoundingClientRect(), root = document.documentElement;
+    if (!btn || br.bottom < 0 || br.top > window.innerHeight || br.right < 0 || br.left > window.innerWidth) {
+      root.style.scrollBehavior = "auto";
+      if (btn) btn.scrollIntoView({ block: "center", inline: "nearest" }); else $("village").scrollIntoView();
+      root.style.scrollBehavior = "";
+    }
+    var r = doorRect(i);
+    if (reduceMotion || !r || !box.animate) { done(); return; }
+    shopState.busy = true;
+    var anim = box.animate([
+      { clipPath: "inset(0px 0px 0px 0px round 0px 0px 0 0)", opacity: 1 },
+      { clipPath: insetFrom(r), opacity: 1, offset: 0.8 },
+      { clipPath: insetFrom(r), opacity: 0 }
+    ], { duration: 600, easing: "cubic-bezier(.5,0,.2,1)" });
+    anim.onfinish = done;
+  }
+
+  // Match the shop to the address after Back / Forward. While a door is still zooming open or shut, wait for it.
+  function syncShop() {
+    shopState.backPending = false; clearTimeout(shopState.backTimer);
+    if (shopState.busy) { shopState.later = true; return; }
+    var m = /^#artifact-(\d+)/.exec(location.hash);
+    if (m) {
+      openFromNumber(+m[1], false);
+      // Forward into a shop we opened earlier: its entry is ours again, so closing goes back through history
+      if (shopState.open >= 0 && history.state && history.state.shop === shopState.open) shopState.pushed = true;
+    }
+    else if (shopState.open >= 0) { shopState.pushed = false; leaveShop(false); }
+  }
+  function syncLater() { if (shopState.later) { shopState.later = false; syncShop(); } }
+  function bindShops() {
+    window.addEventListener("popstate", syncShop);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && shopState.open >= 0) leaveShop(true);
+    });
+    var m = /^#artifact-(\d+)/.exec(location.hash);
+    if (m) openFromNumber(+m[1], false);
+  }
+  function openFromNumber(n, animate) {
+    var list = window.ARTIFACTS || [];
+    for (var i = 0; i < list.length; i++) if (+list[i].number === n) { enterShop(i, animate); return; }
+  }
+
+  function buildVillageStars() {
+    var g = document.getElementById("vStars");
+    if (!g) return;
+    for (var i = 0; i < 90; i++) {
+      var c = el("circle", { cx: f(rand() * 1600), cy: f(rand() * 420), r: f(0.6 + rand() * 1.4), fill: "#ffffff", class: "star" }, g);
+      c.style.animationDelay = f(rand() * 4) + "s";
+    }
   }
 
   /* ---------- Start ---------- */
 
-  // Each step runs on its own, so a problem in one part of the scene never hides the cards.
+  // Each part starts on its own, so a problem in one never hides the shops.
   function safely(name, fn) {
     try { fn(); } catch (e) { if (window.console) console.error("Portfolio: " + name + " failed", e); }
   }
-  safely("cards", renderCards);
-  safely("card pop-up", bindDialog);
-  safely("stars", buildStars);
-  safely("trees", buildTreeline);
-  safely("pines", buildPines);
-  safely("lanterns", buildLanterns);
-  safely("windows", buildWindows);
-  safely("ice", buildIce);
-  safely("skaters", buildSkaters);
-  safely("secrets", bindHotspots);
-  safely("snow", initSnow);
+  safely("shops", renderShops);
+  safely("shop interiors", bindShops);
+  safely("village", buildVillageStars);
   safely("layout", measure);
-  window.addEventListener("resize", function () { safely("layout", measure); });
+  safely("skaters", buildSkaters);
+  var onLayoutChange = function () { safely("layout", measure); };
+  window.addEventListener("resize", onLayoutChange);
+  if (tallQuery) {
+    if (tallQuery.addEventListener) tallQuery.addEventListener("change", onLayoutChange);
+    else if (tallQuery.addListener) tallQuery.addListener(onLayoutChange);
+  }
+  safely("secrets", bindSecrets);
+  safely("snow", initSnow);
   safely("parallax", bindParallax);
+  safely("hero watch", watchHero);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { safely("title", fitTitle); safely("signs", measureSigns); });
+  setTimeout(function () { safely("title", fitTitle); safely("signs", measureSigns); }, 1500);
+
   if (!reduceMotion) {
-    var frameFailed = false;
+    var failed = false;
     var loop = function (now) {
-      try { frame(now); } catch (e) {
-        if (!frameFailed && window.console) console.error("Portfolio: animation failed", e);
-        frameFailed = true;
-      }
+      try { frame(now); } catch (e) { if (!failed && window.console) console.error("Portfolio: animation failed", e); failed = true; }
+      requestAnimationFrame(loop);
     };
-    loopRef = loop;
     requestAnimationFrame(loop);
-    setTimeout(function () { safely("fox", walkFox); }, 7000);
-    setTimeout(function () { safely("shooting star", shootingStar); }, 6000);
   } else {
+    // A still picture: skaters resting in their poses, finished marks on the ice, snow hanging in the air.
     safely("still scene", function () {
-      $("fox").setAttribute("transform", "translate(700,668) scale(1.3)");
-      placeSkaters(performance.now());
-      drawBlades(performance.now());
+      placeFox(0);
+      drawStillMarks();
       drawSnow(0);
     });
   }

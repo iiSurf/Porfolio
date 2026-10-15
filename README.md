@@ -1,16 +1,16 @@
 # My Portfolio
 
-My portfolio for this quarter: a full-screen frozen lake with a fairytale castle, glowing skate marks on the ice, and one card for each of my five artifacts.
+My portfolio for this quarter: a paper-cut frozen lake where figure skaters practice their axel jumps under glowing lanterns, and a village with one cozy shop for each of my five artifacts.
 It's a static site (HTML, CSS, JavaScript), so it runs on GitHub Pages with no setup.
 
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `index.html` | The page, including the castle scene and the About text |
+| `index.html` | The page, including the paper-cut lake scene, the village and the About text |
 | `cards.js` | **The five artifact cards. Edit this file to hand in an artifact.** |
 | `style.css` | Colors, fonts and layout |
-| `script.js` | Snow, skaters, blade marks, hidden secrets, music box, and the card pop-ups |
+| `script.js` | The figure skaters and their axel practice, skate tracings, snow, hidden secrets, music bell, the shops, and the shop interiors (shopkeeper and menu board) |
 | `LOG.md` | Build log: what I asked for and what changed |
 
 ## Filling in a card
@@ -27,9 +27,13 @@ reflection: "A few sentences on how it went and what I learned.",
 
 Then add an entry to `LOG.md`, push to GitHub, and submit the same site link on Canvas.
 
+## Linking to one shop
+
+Add `#artifact-` and the number to the site link, for example `https://<your-username>.github.io/<repository-name>/#artifact-2`.
+
 ## Changing the About text
 
-It's in `index.html`, inside `<div class="intro" id="about">`.
+It's in `index.html`, inside `<div class="about" id="about">`.
 
 ## Trying it on your computer
 

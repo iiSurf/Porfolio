@@ -19,7 +19,7 @@
     reflection  A few sentences on how it went and what you learned.
                 For an idea card, this is where your idea goes.
     art         Which little concept picture to show:
-                "castle", "tracker", "coach", "language", or "calendar".
+                "mountain", "tracker", "coach", "language", or "calendar".
 
   Tip: keep the quote marks and the comma at the end of each line.
   If the page goes blank after an edit, a missing quote or comma is
@@ -35,11 +35,12 @@ window.ARTIFACTS = [
     linkLabel: "You're looking at it",
     reflection:
       "This website, built with Claude Code as a static page (HTML, CSS and JavaScript, no server). " +
-      "My first version put the whole scene inside a literal snow globe, but I meant the magical snow globe feeling, " +
-      "so I asked for a full-screen frozen lake with a fairytale castle and glowing blade marks on the ice instead. " +
-      "I learned to notice when the AI takes my words too literally and to describe the feeling I want, not only the objects. " +
+      "I went through a snow globe version and a castle version before deciding to start over completely. " +
+      "This time I gathered reference pictures for the feeling I wanted: full and vibrant, layered like paper art, " +
+      "with glowing details and cozy shops, set by a mountain lake like Lake Louise. " +
+      "I learned that showing examples of a style works much better than describing it in words. " +
       "Every change is in LOG.md.",
-    art: "castle",
+    art: "mountain",
   },
   {
     number: 2,
