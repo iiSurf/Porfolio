@@ -36,13 +36,3 @@ Add `#artifact-` and the number to the site link, for example `https://<your-use
 ## Changing the About text
 
 It's in `index.html`, inside `<div class="about" id="about">`.
-
-## Trying it on your computer
-
-Double-click `index.html` to open it in a browser. Everything works offline except the fonts.
-
-## Putting it on GitHub Pages
-
-1. Create a new public repository on GitHub and upload all the files in this folder.
-2. In the repository, go to **Settings → Pages**, choose **Deploy from a branch**, pick `main` and `/ (root)`, and save.
-3. After a minute the site is live at `https://<your-username>.github.io/<repository-name>/`.
