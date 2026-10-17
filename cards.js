@@ -68,7 +68,7 @@ window.ABOUT = {
     {
       heading: "Experience",
       items: [
-        "[Job, volunteer role or team: where and when]",
+        "Software Engineer Intern at Outpave, LLC: August 2026 - Present]",
         "[One thing you did or learned there]",
       ],
     },
@@ -83,9 +83,9 @@ window.ABOUT = {
     {
       heading: "Figure skating",
       items: [
-        "[Your level or tests passed]",
-        "[Your club or home rink]",
-        "[Competitions, shows or coaching]",
+        "Pre Free Skate",
+        "UW Figure Skating Team",
+        "[One thing you did or learned there]",
       ],
     },
   ],
