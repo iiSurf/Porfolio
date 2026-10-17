@@ -1,5 +1,8 @@
 # My Portfolio
 
+- Live Website here [my Portfolio](https://iisurf.github.io/Porfolio/).
+
+
 My portfolio for this quarter: a paper-cut frozen lake where figure skaters practice their axel jumps under glowing lanterns, and a village with one cozy shop for each of my five artifacts.
 The first shop is a skate fitting shop, with a wall of figure skates, stacked boot boxes, blades and cute soft guards, where you can meet me and read my resume.
 It's a static site (HTML, CSS, JavaScript), so it runs on GitHub Pages with no setup.
@@ -54,13 +57,3 @@ They live at the top of `cards.js`, in the `window.ABOUT` block, and show up in 
 
 Add `#artifact-` and the number to the site link, for example `https://<your-username>.github.io/<repository-name>/#artifact-2`.
 Add `#about` to open the skate fitting shop: `https://<your-username>.github.io/<repository-name>/#about`.
-
-## Trying it on your computer
-
-Double-click `index.html` to open it in a browser. Everything works offline except the fonts.
-
-## Putting it on GitHub Pages
-
-1. Create a new public repository on GitHub and upload all the files in this folder.
-2. In the repository, go to **Settings → Pages**, choose **Deploy from a branch**, pick `main` and `/ (root)`, and save.
-3. After a minute the site is live at `https://<your-username>.github.io/<repository-name>/`.
