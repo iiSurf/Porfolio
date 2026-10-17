@@ -56,14 +56,18 @@ a { color: inherit; }
   pointer-events: none;
   background: url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="240" height="40" viewBox="0 0 240 40"%3E%3Cpath d="M-63 40V21C-59.8 11.6667 -26.2 11.6667 -23 21C-19.32 11.6667 19.32 11.6667 23 21C27.64 7.66667 76.36 7.66667 81 21C84.2 13 117.8 13 121 21C125.48 9 172.52 9 177 21C180.2 11.6667 213.8 11.6667 217 21C220.68 11.6667 259.32 11.6667 263 21V40Z" fill="%232a1650" opacity=".25" transform="translate(0 -2)"/%3E%3Cpath d="M-63 40V21C-59.8 11.6667 -26.2 11.6667 -23 21C-19.32 11.6667 19.32 11.6667 23 21C27.64 7.66667 76.36 7.66667 81 21C84.2 13 117.8 13 121 21C125.48 9 172.52 9 177 21C180.2 11.6667 213.8 11.6667 217 21C220.68 11.6667 259.32 11.6667 263 21V40Z" fill="%23cdbdf2"/%3E%3Cpath d="M-44 40V31C-40.48 16.3333 -3.52 16.3333 0 31C4.16 15 47.84 15 52 31C55.04 19 86.96 19 90 31C94.96 12.3333 147.04 12.3333 152 31C155.52 17.6667 192.48 17.6667 196 31C199.52 16.3333 236.48 16.3333 240 31C244.16 15 287.84 15 292 31V40Z" fill="%230a0b2a" opacity=".4" transform="translate(0 -2.5)"/%3E%3Cpath d="M-44 40V31C-40.48 16.3333 -3.52 16.3333 0 31C4.16 15 47.84 15 52 31C55.04 19 86.96 19 90 31C94.96 12.3333 147.04 12.3333 152 31C155.52 17.6667 192.48 17.6667 196 31C199.52 16.3333 236.48 16.3333 240 31C244.16 15 287.84 15 292 31V40Z" fill="%23151a4a"/%3E%3C/svg%3E') repeat-x left bottom / auto 100%;
 }
-.hero-back, .marks, .hero-skaters, .hero-front {
+.hero-back, .marks, .hero-skaters, .hero-front, .hero-near {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
 }
-.marks, .hero-skaters, .hero-front, .hero-front * { pointer-events: none; }
+.marks, .hero-skaters, .hero-front, .hero-front *, .hero-near { pointer-events: none; }
+/* the near layer (the parrot on the near lamp post) is painted over the front layer, but comes right after the
+   back layer in the page, so Tab reaches the parrot before the skaters */
+.hero-near { z-index: 1; }
+.hero-near .hotspot { pointer-events: auto; }
 .hero-skaters .skater { pointer-events: auto; cursor: pointer; }
 .hero-skaters .skater.kb { filter: drop-shadow(0 0 4px rgba(255, 236, 170, .95)) drop-shadow(0 0 2px #fff); }
 .skater-key { outline: none; pointer-events: none; }
@@ -112,7 +116,8 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
 
 /* The hidden secrets */
 .hotspot { cursor: pointer; outline: none; transition: filter .3s ease; }
-.hotspot:hover, .hotspot:focus-visible { filter: drop-shadow(0 0 6px rgba(255, 236, 170, .95)); }
+.hotspot:hover, .hotspot.hover, .hotspot:focus-visible { filter: drop-shadow(0 0 6px rgba(255, 236, 170, .95)); }
+.tap-for { cursor: pointer; }
 /* keyboard focus: a white ring round the hit area, edged in dark navy so it shows on the pale sky and on the dark pines */
 .hotspot:focus-visible { filter: drop-shadow(0 0 1px #311f6e) drop-shadow(0 0 1px #311f6e) drop-shadow(0 0 6px rgba(255, 236, 170, .95)); }
 .hotspot:focus-visible > :first-child { stroke: #fff; stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
@@ -125,8 +130,19 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
 .owl-eyes { animation: blink 7s infinite; transform-box: fill-box; transform-origin: center; }
 .owl-head { transform-box: fill-box; transform-origin: center bottom; transition: transform .6s ease; }
 .owl-head.turn { transform: rotate(-26deg); }
-#deerHead { transform-box: fill-box; transform-origin: 0% 100%; transition: transform .6s ease; }
-#deerHead.up { transform: rotate(-18deg) translate(-2px, -3px); }
+/* Where the eagle and the parrot perch: the eagle on a tall shore pine (wide screens) or the hut's roof ridge
+   (phones), the parrot on the near lamp post. Each drawing is in centimetres, scaled to its distance:
+   about 25 scene units a metre on the far shore, 90 on the near lamp post (68 on the phones' smaller lamp). */
+#eagle { transform: translate(470px, 494px); }
+.eagle-art { transform: scale(.25); }
+#parrot, #parrotTap { transform: translate(1314px, 651px); }
+.parrot-art { transform: scale(.9); }
+@media (max-aspect-ratio: 3/4) {
+  #eagle { transform: translate(955px, 466px); }
+  .eagle-art { transform: scale(-.25, .25); }
+  #parrot, #parrotTap { transform: translate(1046px, 753.5px); }
+  .parrot-art { transform: scale(.68); }
+}
 
 /* Navigation pills */
 .nav {
@@ -190,14 +206,7 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
 .found b { font-variant-numeric: tabular-nums; color: var(--rose); }
 .found.all { background: var(--navy); color: var(--whitegold); }
 
-/* About card, beside the village title */
-.about {
-  align-self: end;
-  padding: 22px 24px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, .9);
-  box-shadow: 0 20px 50px rgba(10, 10, 40, .35);
-}
+/* Small headings above the village title */
 .kicker {
   margin: 0;
   font-family: var(--font-display);
@@ -206,16 +215,6 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
   color: var(--navy);
 }
 .kicker.light { color: var(--whitegold); font-size: .85rem; letter-spacing: .2em; text-transform: uppercase; font-weight: 600; }
-.about-text { margin: 8px 0 0; font-size: 1rem; color: #24305e; }
-.traits { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.traits li {
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: #e8eeff;
-  color: var(--ink);
-  font-weight: 800;
-  font-size: .78rem;
-}
 /* Small one-line cue at the bottom of the lake (script.js keeps the skaters above it); it sits just above the
    lilac crests of the scalloped strip along the lake's lower edge (.hero::after, crests at about 80% of its
    height), so the bobbing arrow and the focus ring stay on the dark ice */
@@ -299,15 +298,21 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
   text-shadow: 0 0 30px rgba(224, 69, 122, .55), 0 0 2px rgba(255, 255, 255, .8);
   text-wrap: balance;
 }
-.village-lede { margin: 16px 0 0; max-width: 52ch; font-size: 1.08rem; color: #ece6ff; }
-.village-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 400px); gap: 28px; align-items: end; }
+.village-lede { margin: 16px 0 0; max-width: 52ch; font-size: 1.08rem; color: #ece6ff; text-wrap: pretty; }
+/* the title on the left, the words on the right where the screen is wide enough */
+.village-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 28px; align-items: end; }
+.village-head .village-lede { margin: 0 0 .6rem; }
+.lede-link { color: #fff; font-weight: 800; text-decoration-color: var(--gold); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.lede-link:hover { color: var(--whitegold); }
+/* "About" without script.js: the jump lands just above the shops */
+.about-anchor { display: block; height: 0; scroll-margin-top: 16px; }
 /* the village's words sit above the falling snow (z-index 20), so no flake lands on a letter */
 .village-head, .load-note, .shop-label, .footer p { position: relative; z-index: 21; }
 
 .street {
   margin-top: clamp(28px, 6vh, 64px);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--shops, 5), minmax(0, 1fr));   /* script.js sets --shops: 5, or 6 with an extra fitting shop */
   gap: clamp(10px, 1.6vw, 24px);
   align-items: end;
 }
@@ -350,6 +355,7 @@ html.lite .h4-flick, html.lite .h4-tw, html.lite .h4-fairyB { animation-play-sta
 .chip.idea { background: transparent; color: var(--neon); box-shadow: inset 0 0 0 1px var(--neon); }
 .shop-title { font-family: var(--font-display); font-weight: 800; font-size: .95rem; line-height: 1.25; color: #fff; text-wrap: balance; }
 .shop-open { font-size: .8rem; font-weight: 800; color: var(--whitegold); }
+.shop-also { font-size: .76rem; font-weight: 800; line-height: 1.3; color: #cfd6f5; }
 
 .bulb { animation: bulb 3s ease-in-out infinite; }
 @keyframes bulb { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -540,6 +546,7 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
 /* ---------- Narrow screens ---------- */
 @media (max-width: 980px) {
   .village-head { grid-template-columns: 1fr; }
+  .village-head .village-lede { margin: 16px 0 0; }
   .street {
     display: flex;
     overflow-x: auto;
@@ -560,8 +567,6 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
   .nav nav a { padding: 4px 10px; font-size: .66rem; line-height: 1.3; }
   .logo { font-size: .74rem; padding: 5px 12px; line-height: 1.3; }
   .found { font-size: .66rem; padding: 5px 12px; line-height: 1.3; }
-  .about { padding: 16px 18px; }
-  .about-text { font-size: .92rem; }
   .kicker { font-size: 1rem; }
   .toast { font-size: .88rem; }
 }
@@ -584,6 +589,394 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
   .keeper { right: 50%; transform: translateX(50%); bottom: calc(13svh - 20px); width: auto; height: 22vh; height: 22svh; animation: none; }
   .keeper-svg { height: 100%; width: auto; }
   .keeper-say { display: none; }
+}
+
+/* ---------- Inside the skate fitting shop ----------
+   Like a real skate shop: a pale slatwall runs from the floor almost to the ceiling, right of the snowy window.
+   The letter board hangs on it from two hooks; beside it a wall of figure skate boots sits at eye level (framed
+   pictures and blades above, soft guards below), a tall wooden unit of boot boxes stands at the right, and the
+   fitting (the skater on the bench, the shopkeeper lacing a new skate) happens on the floor in front.
+   Tall screens: board on top, the boots and the boxes below it, the fitting in front, a small window at the top right.
+   Everything is placed with the custom properties below (all in px, vw or vh):
+     --slatL / --slatT      where the slatwall starts (its left edge and its crown moulding)
+     --boardT/L/W/H         the letter board
+     --eye                  eye level: the middle of the wall of boots
+     --dispL / --dispW      the boots, with the frames above and the guards below them, all as wide as each other
+     --boxW / --boxH        the unit of boot boxes, standing on the floor at the right (never in front of the boots)
+     --sceneW / --sceneB    the fitting's width (its height is --sceneH) and how far above the bottom it stands */
+.fit-room {
+  --gut: max(16px, 2.2vw);
+  --winH: min(46vh, calc(20vw * 502 / 274));       /* the big window, frame and sill included */
+  --winW: calc(var(--winH) * 274 / 502);
+  --floorH: 16vh;
+  --slatT: 5vh;
+  --slatL: calc(var(--gut) * 1.5 + var(--winW));
+  --boardT: calc(var(--slatT) + 56px);
+  --boardL: calc(var(--slatL) + var(--gut) * .9);
+  --boardW: clamp(350px, 30vw, 520px);
+  --boardH: min(560px, calc(100vh - var(--boardT) - var(--floorH) - 4vh));   /* About me fills it, even on big screens */
+  --eye: calc(var(--boardT) + (100vh - var(--boardT) - var(--floorH)) * .44);
+  --stageL: calc(var(--boardL) + var(--boardW) + var(--gut) * 1.1);
+  /* the unit of boxes is as tall as the wall allows; on narrower screens only its left part shows, the rest is past
+     the right edge (--boxV is the part you see, and --boxR is 0 then). On small laptops more of it goes past the edge
+     (down to 30% of the room right of the board), so the boots keep about 330px */
+  --boxH: calc(100vh - var(--floorH) - var(--slatT) - 4vh);
+  --boxW: calc(var(--boxH) * 240 / 660);
+  --boxV: min(var(--boxW), calc((100vw - var(--stageL)) * .38), max(calc((100vw - var(--stageL)) * .3), calc(100vw - var(--stageL) - 342px)));
+  --boxR: clamp(0px, calc((var(--boxV) - var(--boxW) + .5px) * 1000), calc(var(--gut) * .9));
+  /* the space between the board and the boxes (--freeW), but never so narrow the boots get tiny, nor so wide the frames
+     would poke above the slatwall; centred in that space. The boots and guards always end 12px before the unit. */
+  --freeW: calc(100vw - var(--stageL) - var(--boxR) - var(--boxV) - var(--gut));
+  --dispW: min(max(var(--freeW), 330px), calc((var(--eye) - var(--slatT) - 10px) * 452 / 330), calc(100vw - var(--stageL) - var(--boxR) - var(--boxV) - 12px));
+  --dispL: calc(var(--stageL) + max(0px, (var(--freeW) - var(--dispW)) / 2));
+  --framesW: min(var(--dispW), calc(var(--freeW) + var(--gut) * .6));
+  --bootsH: calc(var(--dispW) * 384 / 452);
+  --bootsT: calc(var(--eye) - var(--bootsH) / 2);
+  --hooksH: calc(var(--dispW) * 156 / 452);
+  /* the fitting stands on the floor at the right, its people in front of the guards and the foot of the boxes */
+  --sceneW: min(calc(44vh * 640 / 420), calc(100vw - var(--stageL) + var(--gut)));
+  --sceneH: calc(var(--sceneW) * 420 / 640);
+  --sceneL: calc(100vw - var(--sceneW) - var(--gut) * .4);
+  --sceneB: 1.2vh;
+  --lampW: clamp(230px, 34vh, 600px);
+}
+.fit-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+.fit-window, .fit-art, .fit-scene { position: absolute; }
+.fit-window svg, .fit-art svg, .fit-scene svg { display: block; width: 100%; height: auto; }
+.fit-window { z-index: 1; }
+.fit-window-big { left: var(--gut); top: calc(46% - var(--winH) / 2); width: var(--winW); }
+.fit-window-small { display: none; }
+/* the snow outside the window falls the whole height of the glass, without a break (snowWindowSVG in script.js) */
+.fit-snow circle { animation: fitsnow var(--d, 7s) linear infinite; }
+@keyframes fitsnow {
+  from { transform: translate(0, calc(-12px - var(--y))); }
+  to { transform: translate(var(--dx, 8px), calc(var(--h) + 12px - var(--y))); }
+}
+/* the slatwall: pale warm grey slats with fine grooves, a wooden crown and side trim, a little darker near the floor */
+.fit-slat {
+  --slat: #d4c7b7;
+  --sp: clamp(13px, 2.1vh, 22px);
+  position: absolute;
+  z-index: 0;
+  left: var(--slatL);
+  right: 0;
+  top: var(--slatT);
+  bottom: calc(var(--floorH) - 4px);
+  border-top: 12px solid #a8794a;
+  border-left: 9px solid #8a6238;
+  background:
+    linear-gradient(rgba(58, 36, 30, .14), rgba(58, 36, 30, 0) 14%, rgba(58, 36, 30, 0) 70%, rgba(58, 36, 30, .22)),
+    repeating-linear-gradient(var(--slat) 0 calc(var(--sp) - 4px), #ab9a88 calc(var(--sp) - 4px) calc(var(--sp) - 2.5px), #c4b6a6 calc(var(--sp) - 2.5px) calc(var(--sp) - 1px), #e6dccf calc(var(--sp) - 1px) var(--sp)),
+    var(--slat);
+  box-shadow: inset 0 3px 0 #c79a63, inset 0 14px 18px -6px rgba(0, 0, 0, .3), -8px 0 18px rgba(0, 0, 0, .35);
+}
+/* pendant lamps: a warm pool of light over the board and over the wall of boots */
+.fit-lamp {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: calc(var(--x) - var(--lampW) / 2);
+  width: var(--lampW);
+  height: calc(var(--lampW) * 260 / 340);
+  background: radial-gradient(circle calc(var(--lampW) / 2) at 50% calc(var(--lampW) * 80 / 340), rgba(255, 213, 138, .55), rgba(255, 213, 138, 0));
+  pointer-events: none;
+}
+.fit-lamp svg { display: block; width: 100%; height: auto; }
+.fit-lamp-board { --x: calc(var(--boardL) + var(--boardW) / 2); }
+.fit-lamp-wall { --x: calc(var(--dispL) + var(--framesW) * 305 / 452); }   /* in the gap between two frames, clear of their hangers */
+/* the pieces on the slatwall (fitWallArt in script.js) */
+.fit-art { z-index: 1; }
+.fit-boots { left: var(--dispL); top: var(--bootsT); width: var(--dispW); }
+.fit-frames { left: var(--dispL); bottom: calc(100% - var(--bootsT) + var(--dispW) * .01); width: var(--framesW); }
+.fit-hooks { left: var(--dispL); top: calc(var(--bootsT) + var(--bootsH) + var(--dispW) * .02); width: var(--dispW); }
+.fit-boxes { z-index: 2; right: var(--boxR); bottom: calc(var(--floorH) - 6px); width: var(--boxV); overflow: hidden; filter: drop-shadow(-6px 6px 10px rgba(0, 0, 0, .3)); }
+.fit-boxes svg { width: var(--boxW); max-width: none; }
+.fit-boxes-short { display: none; }
+.fit-stack { z-index: 2; bottom: calc(var(--sceneB) + var(--sceneH) * .05); left: calc(var(--sceneL) - var(--sceneW) * .43); width: calc(var(--sceneW) * .452); }
+.fit-scene { z-index: 3; bottom: var(--sceneB); left: var(--sceneL); width: var(--sceneW); }
+.fit-floor {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--floorH);
+  background:
+    linear-gradient(rgba(0, 0, 0, .34), transparent 55%),
+    repeating-linear-gradient(transparent 0 26px, rgba(0, 0, 0, .14) 26px 28px),
+    #8a6238;
+  border-top: 10px solid #3a2228;
+  border-top: 10px solid color-mix(in srgb, var(--wall) 45%, #2a1a14);
+  box-shadow: 0 -2px 0 rgba(255, 255, 255, .06);
+}
+.fit-plant { position: absolute; left: calc(var(--gut) + 8px); bottom: 34%; width: clamp(56px, 7vh, 110px); }
+.fit-room .int-back { z-index: 6; }
+/* the board's two hooks and chains, just above its top corners */
+.fit-hang { position: absolute; z-index: 3; top: calc(var(--slatT) + 10px); left: var(--boardL); width: var(--boardW); height: calc(var(--boardT) - var(--slatT) - 4px); display: flex; justify-content: space-between; padding: 0 calc(var(--boardW) * .14); box-sizing: border-box; pointer-events: none; }
+.fit-hang svg { display: block; flex: none; width: auto; height: 100%; }
+
+/* the speech bubble belongs to the kneeling shopkeeper: --sayL / --sayB place it in the scene, its tail just right of
+   the shopkeeper's face (move them if the drawing changes), low enough to leave the upper shelves of boxes clear.
+   White with a dark outline and a tail, so it never reads as one more box lid. */
+.fit-scene { --sayL: 61%; --sayB: 49%; --tail: 14px; }
+.fit-room .fit-say { display: block; right: auto; top: auto; left: var(--sayL); bottom: var(--sayB); width: min(210px, 36%); border: 2px solid #5a2430; border-radius: 16px 16px 16px 4px; background: #fff8f3; box-shadow: 0 6px 16px rgba(0, 0, 0, .35); }
+.fit-room .fit-say::before, .fit-room .fit-say::after { content: ""; position: absolute; top: 100%; left: -2px; border-style: solid; border-color: #5a2430 transparent transparent; border-width: var(--tail) var(--tail) 0 0; }
+.fit-room .fit-say::after { left: 0; border-color: #fff8f3 transparent transparent; border-width: calc(var(--tail) - 5px) calc(var(--tail) - 5px) 0 0; }
+
+/* The letter board: a dark felt board in a wooden frame hanging on the wall, so its words never sit on the busy art.
+   The top (shop name, hello and tabs) stays put; the sections below it scroll. */
+.fit-room .board {
+  z-index: 3;
+  top: var(--boardT);
+  left: var(--boardL);
+  right: auto;
+  width: var(--boardW);
+  transform: none;
+  height: var(--boardH);   /* a sign keeps its size whichever tab is showing; it ends just above the floor */
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 10px 0 18px;
+  border: 7px solid #8a6238;
+  border-top-color: #a8794a;
+  border-radius: 16px;
+  background: rgb(22, 16, 26);
+  background: color-mix(in srgb, var(--wall) 10%, rgba(14, 10, 18, .96));
+  container-type: inline-size;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .4), 0 0 0 1px #5c3e24, inset 0 0 0 2px rgba(0, 0, 0, .35), inset 0 8px 18px rgba(0, 0, 0, .3);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.fit-top { flex: none; padding-right: 10px; }
+.fit-board .head { flex-wrap: wrap; }
+.fit-board .title { font-size: clamp(1.35rem, 2.3vw, 2.2rem); }
+.fit-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 10px 24px 0;
+  scrollbar-width: thin;
+  scrollbar-color: #8a6238 transparent;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 26px), transparent);
+}
+.fit-panel { padding-top: 6px; border-radius: 6px; }
+.fit-panel:focus-visible { outline-offset: 0; }
+
+/* Tabs on a ledge: About me / Resume / Artifact N (only once script.js has wired them up) */
+.fit-tabs { display: none; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.fit-board.tabbed .fit-tabs { display: flex; }
+.fit-tab {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 8px 13px 7px;
+  border-radius: 8px 8px 3px 3px;
+  background: rgba(251, 233, 208, .12);
+  color: #f6f0e4;
+  font: 600 .72rem/1.2 var(--font-display);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .45);
+  cursor: pointer;
+}
+.fit-tab:hover { background: rgba(251, 233, 208, .24); }
+.fit-tab[aria-selected="true"] { background: #fbe9d0; color: #3a2400; text-shadow: none; box-shadow: 0 0 16px rgba(255, 213, 138, .4); }
+.fit-tab:focus-visible { outline: 3px solid var(--neon); outline-offset: 2px; }
+/* a narrow board: smaller tabs, so all of them still fit on one ledge */
+@container (max-width: 400px) {
+  .fit-tabs { gap: 6px; }
+  .fit-tab { padding: 7px 9px 6px; font-size: .64rem; letter-spacing: .07em; }
+  .fit-board .head { font-size: .78rem; }
+  .fit-board .title { font-size: 1.3rem; }
+}
+@container (max-width: 300px) {
+  .fit-tab { padding: 7px 7px 6px; font-size: .6rem; letter-spacing: .05em; }
+}
+@container (max-width: 270px) {
+  .fit-tabs { gap: 4px; }
+  .fit-tab { padding: 7px 5px 6px; font-size: .56rem; letter-spacing: .03em; }
+}
+.fit-board.tabbed .fit-panel:not(.on) { display: none; }
+/* with tabs, each section's own heading is spoken but not shown (the tab already says it) */
+.fit-board.tabbed .fit-plabel { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* About me: traits as little letter tiles */
+.fit-traits { list-style: none; margin: -6px 0 14px; padding: 0; display: flex; flex-wrap: wrap; gap: 12px 8px; }
+.fit-traits li {
+  padding: 6px 11px 5px;
+  border-radius: 6px;
+  background: #fbe9d0;
+  color: #5a2430;
+  font: 800 .72rem/1.25 var(--font-display);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  box-shadow: 0 3px 0 #8a6238, 0 7px 10px rgba(0, 0, 0, .4);
+}
+/* Resume: section headings on ledges, items on the ledged lines like the reflection */
+.fit-note { margin: 0 0 16px; font-weight: 800; font-size: .84rem; color: #ffd36b; }
+.board .fit-rhead { margin-bottom: 14px; font-size: .78rem; color: var(--neon); text-shadow: 0 0 10px rgba(0, 0, 0, .6), 0 2px 0 rgba(0, 0, 0, .45); }
+.fit-list {
+  list-style: none;
+  margin: 0 0 22px;
+  padding: 0;
+  font-family: var(--font-body);
+  font-weight: 800;
+  font-size: clamp(.95rem, .45vw + .78rem, 1.1rem);
+  line-height: 2.3;
+  letter-spacing: .03em;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .45);
+  background-image: linear-gradient(transparent 1.66em, #b0814f 1.66em, #8a6238 1.94em, rgba(0, 0, 0, .3) 1.94em, transparent 2.2em);
+  background-size: 100% 2.3em;
+}
+.fit-list li { position: relative; padding-left: 1.1em; }
+.fit-list li::before { content: ""; position: absolute; left: .1em; top: 1.02em; width: .4em; height: .4em; border-radius: 50%; background: var(--neon); box-shadow: 0 0 8px var(--neon); }
+/* anything still in [square brackets] in cards.js: a dashed "fill me in" box */
+.todo { color: #ffe2b0; background: rgba(255, 211, 107, .12); border-radius: 4px; outline: 1.5px dashed rgba(255, 211, 107, .7); outline-offset: 1px; padding: 0 .2em; text-shadow: none; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+
+/* Tall or narrow screens: board on top; under it a band of slatwall with the boots at eye level (the lower three rows
+   of them), the guards under them, a shorter unit of boxes at the right, and the fitting in front */
+@media (max-aspect-ratio: 1/1) {
+  .fit-room {
+    --floorH: 8vh;
+    --slatT: 80px;
+    --slatL: 0px;
+    --boardT: 102px;
+    --boardMin: 40vh;                                   /* the board always gets at least this much */
+    --sceneW: min(calc(100vw - 20px), 600px, calc(30vh * 640 / 420));
+    --sceneH: calc(var(--sceneW) * 420 / 640);
+    --sceneL: calc(50% - var(--sceneW) / 2);
+    --sceneB: 1.2vh;
+    /* the lowest boots sit just behind the skater's head */
+    --bootsB: calc(var(--sceneB) + var(--sceneH) * .6);
+    /* --bootsV is the part of the boots drawing that shows (from its second row down, cut just below the first row's
+       size strips): as wide as the room beside the boxes allows (the boxes grow with it: dispW + boxW + boxR + 20px
+       fill the width), but never so tall it squeezes the board */
+    --rows: .742;
+    --bootsV: min(calc((100vw - var(--boxR) - 20px - (var(--bootsB) + 8px - var(--floorH)) * 240 / 456) * (384 / 452 * var(--rows)) / (1 + 240 / 456 * 384 / 452 * var(--rows))), calc(100vh - var(--boardT) - var(--boardMin) - var(--bootsB) - 10px));
+    --dispW: calc(var(--bootsV) / var(--rows) * 452 / 384);
+    --bootsH: calc(var(--dispW) * 384 / 452);
+    /* the boxes stand from the floor up to the top of the boots */
+    --boxH: calc(var(--bootsB) + var(--bootsV) + 8px - var(--floorH));
+    --boxW: calc(var(--boxH) * 240 / 456);
+    --boxV: var(--boxW);
+    --boxR: 10px;
+    --dispL: max(10px, calc((100vw - var(--boxR) - var(--boxW) - var(--dispW)) / 2));
+  }
+  .fit-window-big, .fit-plant, .fit-lamp, .fit-frames, .fit-stack, .fit-boxes-tall { display: none; }
+  .fit-boxes-short { display: block; }
+  .fit-window-small { display: block; top: 8px; right: 16px; width: min(140px, calc(100vw - 232px)); }
+  .fit-slat { border-left: 0; }
+  .fit-boots { top: auto; bottom: var(--bootsB); height: var(--bootsV); overflow: hidden; }
+  .fit-boots svg { position: absolute; left: 0; bottom: 0; }
+  .fit-hooks { top: auto; bottom: calc(var(--bootsB) - var(--hooksH) - var(--dispW) * .02); }
+  .fit-boxes { bottom: calc(var(--floorH) - 4px); }
+  /* the board ends where the boots begin */
+  .fit-room .board { left: 16px; right: 16px; width: auto; height: auto; max-height: calc(100% - var(--boardT) - var(--bootsB) - var(--bootsV) - 10px); padding-left: 14px; border-width: 6px; }
+  .fit-hang { left: 16px; right: 16px; width: auto; padding: 0 14%; }
+  .fit-scene { --sayL: 64%; --sayB: 37%; --tail: 11px; }     /* right of the shopkeeper's face, over the foot of the boxes */
+  .fit-room .fit-say { font-size: .72rem; padding: 6px 9px; width: min(150px, 35%); }
+}
+/* phones: the bubble sits low, over the floor and the bottom shelf the shopkeeper already hides, with its tail
+   pointing up at the shopkeeper, so most of the boxes stay in view */
+@media (max-aspect-ratio: 1/1) and (max-width: 599px) {
+  .fit-scene { --sayB: 12%; }
+  .fit-room .fit-say { border-radius: 4px 16px 16px 16px; }
+  .fit-room .fit-say::before, .fit-room .fit-say::after { top: auto; bottom: 100%; border-color: transparent transparent #5a2430; border-width: 0 var(--tail) var(--tail) 0; }
+  .fit-room .fit-say::after { bottom: calc(100% - 3px); border-color: transparent transparent #fff8f3; border-width: 0 calc(var(--tail) - 5px) calc(var(--tail) - 5px) 0; }
+}
+@media (max-aspect-ratio: 1/1) and (max-height: 760px) {
+  .fit-top .head { display: none; }
+}
+/* small phones (320 x 568): a little more board, so more than a line of About me shows */
+@media (max-aspect-ratio: 1/1) and (max-height: 600px) {
+  .fit-room { --boardMin: 44vh; }
+}
+@media (max-aspect-ratio: 1/1) and (min-width: 600px) {
+  /* tall tablets: everything a little bigger, the frames back over the boots */
+  .fit-room { --slatT: 100px; --boardT: 122px; --boardMin: 36vh; --sceneW: min(760px, calc(100vw - 48px), calc(34vh * 640 / 420)); --boxR: 24px; }
+  .fit-window-small { width: 200px; }
+  /* only the two rows of guards: the gloves under them would sink behind the floor here */
+  .fit-hooks { clip-path: inset(-40px -40px calc(var(--dispW) * 56 / 452) -40px); }
+  .fit-room .board { left: 50%; right: auto; width: min(680px, calc(100% - 32px)); transform: translateX(-50%); }
+  .fit-hang { left: 50%; right: auto; width: min(680px, calc(100% - 32px)); transform: translateX(-50%); }
+}
+@media (max-aspect-ratio: 1/1) and (min-width: 600px) and (max-height: 1100px) {
+  .fit-room { --boardMin: 40vh; }   /* iPad portrait: room for all of About me, trait tiles included */
+}
+/* Phones held sideways: no room for the big window, so the small one sits above the board */
+@media (min-aspect-ratio: 1/1) and (max-height: 520px) {
+  .fit-room {
+    --gut: 14px;
+    --floorH: 10vh;
+    --slatT: 0px;
+    --slatL: calc(var(--boardL) + var(--boardW) + 6px);
+    --boardT: 78px;
+    --boardL: var(--gut);
+    --boardW: min(48vw, 460px);
+    --stageL: calc(var(--boardL) + var(--boardW) + var(--gut));
+    --boxH: calc(100vh - var(--floorH) - 10px);
+    --boxV: min(var(--boxW), calc((100vw - var(--stageL)) * .3));
+    --boxR: 0px;
+    --dispW: calc(100vw - var(--stageL) - var(--boxW) - 10px);
+    --eye: 36vh;
+    --sceneW: min(calc(100vw - var(--stageL) + 10px), calc(54vh * 640 / 420));
+    --sceneL: calc(100vw - var(--sceneW));
+    --sceneB: 0px;
+  }
+  .fit-window-big, .fit-plant, .fit-lamp, .fit-frames, .fit-stack, .fit-hang { display: none; }
+  .fit-window-small { display: block; top: 8px; left: calc(var(--boardL) + var(--boardW) - 124px); width: 124px; }
+  .fit-slat { border-top: 0; }
+  .fit-room .board { height: auto; max-height: calc(100% - var(--boardT) - 10px); padding-top: 12px; }
+  .fit-top .head { display: none; }   /* short screens: the hello and the tabs are enough up top */
+}
+/* small landscape screens (phones held sideways, small windows): a smaller bubble, so it is not squeezed into a column */
+@media (min-aspect-ratio: 1/1) and (max-height: 520px), (min-aspect-ratio: 1/1) and (max-width: 960px) {
+  .fit-scene { --sayL: 59.5%; --tail: 11px; }
+  .fit-room .fit-say { font-size: .72rem; padding: 6px 9px; width: min(140px, 40%); }
+}
+
+/* Fitting shop slatwall (fitWallArt): one guard swings on its hook, a glint runs along the gold blade */
+.fw-swing { transform-box: view-box; transform-origin: 0 0; animation: fw-swing 4.6s ease-in-out infinite alternate; }
+.fw-glint { opacity: 0; animation: fw-glint 7s ease-in-out infinite; animation-delay: 1.5s; }
+@keyframes fw-swing { from { transform: rotate(-2.4deg); } to { transform: rotate(2.4deg); } }
+@keyframes fw-glint {
+  0% { transform: translateX(0); opacity: 0; }
+  4% { opacity: 1; }
+  22% { opacity: 1; }
+  26% { transform: translateX(146px); opacity: 0; }
+  100% { transform: translateX(146px); opacity: 0; }
+}
+html.lite .fw-swing, html.lite .fw-glint { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .fw-swing, .fw-glint { animation: none; }
+}
+/* Fitting shop scene: the skater trying on new skates (fitSceneSVG in script.js) */
+.fs-scene { display: block; width: 100%; height: auto; }
+/* the shopkeeper tugs the laces snug, then lets go */
+.fs-tug { transform-box: view-box; transform-origin: 378px 248px; animation: fs-tug 3.2s ease-in-out infinite; }
+.fs-press { transform-box: view-box; transform-origin: 368px 250px; animation: fs-press 3.2s ease-in-out infinite; }
+/* the skater swings the free foot */
+.fs-swing { transform-box: view-box; transform-origin: 262px 292px; animation: fs-swing 2.8s ease-in-out infinite alternate; }
+/* blinks (the same idea as the shopkeeper behind the counter) */
+.fs-eyes, .fs-keyes { transform-box: fill-box; transform-origin: center; animation: fs-blink 5s infinite; }
+.fs-keyes { animation-delay: -2.2s; animation-duration: 6s; }
+/* now and then a little heart floats up over the new skate, and the blade glints */
+.fs-heart { transform-box: fill-box; transform-origin: center; animation: fs-heart 6s ease-out infinite; }
+.fs-glint { transform-box: fill-box; transform-origin: center; animation: fs-glint 6s ease-in-out infinite; animation-delay: -3s; }
+
+@keyframes fs-tug { 0%, 52%, 100% { transform: rotate(0deg); } 64% { transform: rotate(-4deg); } 76% { transform: rotate(-3deg); } }
+@keyframes fs-press { 0%, 52%, 100% { transform: rotate(0deg); } 64%, 76% { transform: rotate(1deg); } }
+@keyframes fs-swing { from { transform: rotate(-5deg); } to { transform: rotate(6deg); } }
+@keyframes fs-blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.1); } }
+@keyframes fs-heart { 0%, 55% { transform: translateY(6px) scale(.6); opacity: 0; } 65% { opacity: 1; } 85% { opacity: 1; } 100% { transform: translateY(-22px) scale(1); opacity: 0; } }
+@keyframes fs-glint { 0%, 80%, 100% { transform: scale(.2); opacity: 0; } 88% { transform: scale(1); opacity: 1; } }
+
+/* calm devices: hold still */
+html.lite .fs-scene * { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  .fs-scene * { animation: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {

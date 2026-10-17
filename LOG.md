@@ -216,3 +216,42 @@ What I asked the AI for, what changed, and what I decided. Newest entries go at 
 - Blades stay on top of the ice, and getting up after a fall is smoother.
 - A scalloped paper edge now joins the lake to the village. Keyboard focus on the secrets is easier to see, the page has a small snowflake tab icon, and the lake stops animating while you're in the village so phones save battery.
 - Shops: the browser's Back and Forward buttons work cleanly, double-clicking "Back to the village" no longer jumps off the site, and closing a shop you opened from a direct link (like `#artifact-3`) brings you back to that shop in the village. Snowflakes no longer fall across the shop signs.
+
+---
+
+## 2026-10-16 · The skate fitting shop
+
+### What I asked for
+
+- Make one of the shops a figure skate fitting shop that holds my About me and my resume.
+- In the background, a skater being fitted with new skates by the shopkeeper.
+- On the wall: figure skate boots, figure skate blades, and soft guards with animal and fruit themes.
+- Keep the window that looks out at falling snow.
+- I picked Artifact 1's shop to become the fitting shop. The other four shops stay as artifact shops for now; I'll change them later.
+- After the first look I sent three photos of real skate shops (layout ideas only). The skates were too high up on the wall, and stacked boot boxes are just as important.
+
+### What changed
+
+- The first shop in the village is now the skate fitting shop. Its board has three tabs: About me, Resume and Artifact 1. The "About" link at the top of the page (or `#about` at the end of the address) goes straight there.
+- My About me and resume now live in `cards.js` in the `window.ABOUT` block. The resume has blanks in [square brackets] for me to fill in; nothing in it is made up. The separate About panel in the village is gone.
+- The room looks like a real skate shop: a pale slatwall from floor to ceiling, rows of figure skates at eye level with size tags, blades, animal and fruit soft guards and gloves on hooks, and a tall shelf of stacked boot boxes with more boxes on the floor. No brand names anywhere.
+- In front, a skater sits on the fitting bench while the shopkeeper laces up her new skates and says "Welcome in! Let's find you the perfect fit." The snowy window, the lamps and the board are still there.
+- Clean-up after checking it on desktops, tablets and phones: the box shelf no longer covers the boots on smaller laptops and iPads, the boot shadows are soft, the speech bubble has a tail pointing at the shopkeeper, the board doesn't look half empty on big monitors, all of About me fits on an iPad held upright, and the tabs fit on one row on small phones. On phones the shopkeeper's speech bubble sits lower so more of the boot boxes show, and the lamp and the guards behind the skater's head were nudged so nothing crowds them.
+
+---
+
+## 2026-10-16 · Malamutes, an eagle, a parrot and a ski resort
+
+### What I asked for
+
+- Replace the deer and the fox with malamutes wearing purple scarves, an eagle and an African grey parrot, all drawn to the right size for where they are. The deer, fox and owl were far too big.
+- Three visible ski lifts on the background mountains, with a ski resort and village under distant floodlights, and tiny dots for the far-away skiers and snowboarders going down the slopes and riding the chairlifts.
+
+### What changed
+
+- The deer and fox are gone. Two malamutes in purple scarves walk together along the far edge of the ice and stop now and then to sniff. A bald eagle perches on top of a far pine (on the hut roof on phones), an African grey parrot sits on the right lamp post by the ice, and the owl is now about a quarter of its old size.
+- Each animal is sized against things at the same distance (the hut door, the lamp posts and the skaters). The drawings are small, but each one still has a finger-sized tap area.
+- There are now six secrets: the bell, the owl, the malamutes, the eagle, the parrot and the skaters. Tapping the malamutes makes them stop and wag, the eagle lifts off, circles once and lands, and the parrot bobs and chirps "Nice axel!".
+- The mountains have three chairlifts with towers, cables and moving chairs carrying tiny riders, a little resort village with lit windows at the base, and floodlit runs that glow, with tiny skiers and snowboarders curving down them. All three lifts show on phones too.
+- The animals, chairs and skiers stop moving while you're in the village or a shop, and stay still for people who turn on reduced motion.
+- I asked for this version to go into my site files before the last review round. Any fixes from that round get their own entry below.

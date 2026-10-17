@@ -1,6 +1,7 @@
 /*
-  Runs the frozen lake (figure skaters practising axels, glowing skate marks, falling snow, the fox,
-  the hidden secrets and the music box) and builds a shop in the village for every card in cards.js.
+  Runs the frozen lake (figure skaters practising axels, glowing skate marks, falling snow, the malamutes,
+  eagle and parrot, the ski resort's chairlifts, the hidden secrets and the music box) and builds a shop in
+  the village for every card in cards.js.
   You shouldn't need to edit this file to fill in a card; use cards.js.
 
   The file has two parts:
@@ -1947,7 +1948,10 @@
         icePolygon: [[440, 632], [1160, 632], [1280, 650], [1262, 760], [1240, 880], [1224, 990], [384, 990], [362, 880], [344, 760], [332, 650]],
         horizonY: 590, farY: 640, nearY: 990, skaterHeightFar: 64, skaterHeightNear: 210
       },
-      foxPath: { y: 589, x0: 380, x1: 1230 }
+      // the two malamutes walk along the edge of the ice, just in front of the far shore
+      dogPath: { y: 621, x0: 430, x1: 1170 },
+      // the eagle's circle when it is tapped, round a point beside its pine (it stays under the lanterns)
+      eagleLoop: { cx: 392, cy: 462, rx: 92, ry: 18 }
     },
     tall: {
       viewBox: [0, -200, 1600, 1200],
@@ -1955,12 +1959,13 @@
         icePolygon: [[580, 636], [1028, 636], [1030, 700], [1004, 740], [1002, 830], [986, 930], [956, 990], [650, 990], [632, 930], [628, 820], [596, 780], [590, 700]],
         horizonY: 590, farY: 640, nearY: 990, skaterHeightFar: 64, skaterHeightNear: 200
       },
-      foxPath: { y: 589, x0: 600, x1: 1130 }   // starts right of the big phone-only pine on the left
+      dogPath: { y: 621, x0: 615, x1: 1005 },   // between the big phone-only pines
+      eagleLoop: { cx: 985, cy: 446, rx: 46, ry: 15 }   // over the hut, clear of the bell
     }
   };
   // The open ice below the far shore and the side banks; skate marks are clipped to it.
   var ICE_SURFACE = "M-200,790 L0,704 L90,666 L180,636 L270,612 L360,596 L440,592 L1170,592 L1250,596 L1340,614 L1430,638 L1520,670 L1600,708 L1800,800 L1800,1200 L-200,1200 Z";
-  var HERO_SVGS = ["heroBack", "heroSkaters", "heroFront"];
+  var HERO_SVGS = ["heroBack", "heroNear", "heroSkaters", "heroFront"];
   // Same test as the CSS that swaps the wide and tall titles, so the crop and the title always agree.
   var tallQuery = window.matchMedia ? window.matchMedia("(max-aspect-ratio: 3/4)") : null;
   var layout = SCENE.wide, layoutName = "";
@@ -1974,6 +1979,16 @@
     var vb = layout.viewBox.join(" ");
     HERO_SVGS.forEach(function (id) { var s = $(id); if (s) s.setAttribute("viewBox", vb); });
     trails = []; chips = []; iceKey = "";
+    // Tab goes left to right: the eagle's pine is left of the owl on wide screens; on phones its hut roof is right
+    // of the bell, so it comes after the bell (it never meets the title, so painting it last changes nothing)
+    var eagle = $("eagle"), owl = $("owl"), bellG = $("h4-bell");
+    if (eagle && owl && bellG) {
+      var had = document.activeElement === eagle;
+      if (name === "tall") bellG.parentNode.insertBefore(eagle, bellG.nextSibling);
+      else owl.parentNode.insertBefore(eagle, owl);
+      if (had) eagle.focus();
+    }
+    if (eagleFlight) landEagle();
   }
 
   /* ---------- Fitting the hero drawings to the screen ---------- */
@@ -1994,20 +2009,42 @@
     sizeSnow();
     iceClip = null;
     par.dirty = true;
-    fitFox();
+    fitDogs();
+    sizeHits();
     fitTitle();
     updateIce();
     if (reduceMotion) { drawStillMarks(); drawSnow(0); }
   }
-  // The fox walks only where it is fully on screen (phones crop the sides of the scene).
-  var foxRange = { x0: 380, x1: 1230 };
-  function fitFox() {
-    var p = layout.foxPath, half = 46, l = (0 - view.ox) / view.s + half, r = (view.w - view.ox) / view.s - half;
-    foxRange.x0 = Math.max(p.x0, l); foxRange.x1 = Math.min(p.x1, r);
-    if (foxRange.x1 < foxRange.x0) foxRange.x0 = foxRange.x1 = (foxRange.x0 + foxRange.x1) / 2;
-    fox.x = Math.max(foxRange.x0, Math.min(foxRange.x1, fox.x));
-    fox.target = fox.x;
-    placeFox(0);
+  // The malamutes walk only where both are fully on screen (phones crop the sides of the scene).
+  var dogRange = { x0: 430, x1: 1170 };
+  function fitDogs() {
+    var p = layout.dogPath, half = 42, l = (0 - view.ox) / view.s + half, r = (view.w - view.ox) / view.s - half;
+    dogRange.x0 = Math.max(p.x0, l); dogRange.x1 = Math.min(p.x1, r);
+    if (dogRange.x1 < dogRange.x0) dogRange.x0 = dogRange.x1 = (dogRange.x0 + dogRange.x1) / 2;
+    dogs.x = Math.max(dogRange.x0, Math.min(dogRange.x1, dogs.x));
+    dogs.target = dogs.x;
+    placeDogs(performance.now());
+  }
+  // The animals are small (true to scale), but each one's invisible tap target (and the bell's) stays at least 48 px across.
+  var HITS = { owl: 16, eagle: 20, parrot: 22, malamutes: 0, bell: 34 };
+  var HIT_X = { parrot: 0 };   // where the parrot's target sits (it may move in from the screen's edge on narrow phones)
+  function sizeHits() {
+    var min = 24 / view.s, hero = $("top").getBoundingClientRect();
+    for (var id in HITS) {
+      var n = $(id), c = n && n.firstElementChild;
+      if (!c) continue;
+      if (id === "malamutes") { c.setAttribute("rx", f(Math.max(30, min))); c.setAttribute("ry", f(Math.max(19, min))); }
+      else c.setAttribute("r", f(Math.max(HITS[id], min)));
+      if (id in HIT_X) {
+        // the phones' lamp post stands near the right edge: keep the whole target on screen
+        c.setAttribute("cx", HIT_X[id]);
+        var q = c.getBoundingClientRect(), over = q.right - (hero.right - 2);
+        if (over > 0) c.setAttribute("cx", f(HIT_X[id] - over / view.s));
+      }
+      // the parrot's tap target in the back layer matches the focus ring round it
+      var tap = $(id + "Tap"), tc = tap && tap.firstElementChild;
+      if (tc) { tc.setAttribute("r", c.getAttribute("r")); tc.setAttribute("cx", c.getAttribute("cx") || 0); }
+    }
   }
 
   // Fit the title banner to the screen: shrink it if the words would not fit across (they keep 18 px from both
@@ -2324,6 +2361,8 @@
     set("h4-pFar", 0.35, -3);
     set("h4-pMid", 0.2, -6);
     set("h4-pNear", 0, -8);
+    set("h4-nearAnimals", 0, -8);   // the parrot stays on its lamp post
+    set("h4-parrotTapP", 0, -8);
   }
   function bindParallax() {
     if (reduceMotion) return;
@@ -2404,6 +2443,134 @@
     flakes.forEach(function (fl) { fl.vy = -30 - Math.random() * 110; });
   }
 
+  /* ---------- Ski resort on the far mountains: chairs ride the three lifts, skiers wind down the floodlit runs ---------- */
+
+  // It is far away, so everything is tiny and slow. It moves only while the lake does (frame() calls stepResort), all in
+  // one step 10 times a second (each step repaints the slopes), and stands still under reduced motion and in lite mode:
+  // chairs hang on the cables, skiers are halfway down. The ice reflects #h4-mtns, so the resort lives outside it
+  // (#h4-rSki) and is drawn once; only its warm haze (#h4-resort) is part of the mountains, so the ice shows a soft glow.
+  var resort = { sets: {}, t: 7, last: 0, tmp: [0, 0, 0, 0] };
+  var RIDE = 5, CHAIR_GAP = 22, CAB = 1.8;    // chair speed (scene units a second), room between chairs, half the cable gap
+  var SKI_INK = ["#24305e", "#24305e", "#1d1420", "#24305e", "#b8433f", "#6b4aa8"];
+  var RIDER_INK = ["#24305e", "#24305e", "#b8433f", "#e0457a", "#6b4aa8", "#1d1420"];
+  function resortLine(str) {
+    var a = String(str || "").split(/[\s,]+/).map(Number), p = [], l = [0], i;
+    for (i = 0; i + 1 < a.length; i += 2) p.push([a[i], a[i + 1]]);
+    for (i = 1; i < p.length; i++) l.push(l[i - 1] + Math.sqrt(Math.pow(p[i][0] - p[i - 1][0], 2) + Math.pow(p[i][1] - p[i - 1][1], 2)));
+    return { p: p, l: l, len: l[l.length - 1] || 0 };
+  }
+  // the point d units down a run, and the run's direction there
+  function alongRun(run, d, out) {
+    var l = run.l, p = run.p, i = 1;
+    while (i < l.length - 1 && l[i] < d) i++;
+    var seg = (l[i] - l[i - 1]) || 1, u = Math.max(0, Math.min(1, (d - l[i - 1]) / seg));
+    out[2] = (p[i][0] - p[i - 1][0]) / seg; out[3] = (p[i][1] - p[i - 1][1]) / seg;
+    out[0] = p[i - 1][0] + out[2] * seg * u; out[1] = p[i - 1][1] + out[3] * seg * u;
+    return out;
+  }
+  function resortTf(o, x, y) {
+    var s = "translate(" + Math.round(x * 100) / 100 + " " + Math.round(y * 100) / 100 + ")";
+    if (s !== o.tf) { o.tf = s; o.e.setAttribute("transform", s); }
+  }
+  // a skier (or a snowboarder: slower, longer turns) leaves the top of a run
+  function launchSkier(k, midway) {
+    var board = Math.random() < 0.35;
+    k.v = board ? 7 + Math.random() * 3 : 9 + Math.random() * 5;
+    k.wave = board ? 30 + Math.random() * 14 : 15 + Math.random() * 10;
+    k.amp = 0.5 + Math.random() * 0.45;
+    k.ph = Math.random() * 6.283;
+    k.d = midway ? k.run.len * (0.15 + Math.random() * 0.7) : 0;
+    k.wait = midway ? 0 : 0.8 + Math.random() * 5;
+    k.e.setAttribute("fill", SKI_INK[Math.floor(Math.random() * SKI_INK.length)]);
+  }
+  function buildResort() {
+    var live = $("h4-rSki"), mt = $("h4-mtns");
+    if (!live || !mt) return;
+    // on wide screens fitTitle stretches the mountains a little taller; the chairs and skiers stretch with them
+    var sync = function () { var t = mt.getAttribute("transform"); if (t) live.setAttribute("transform", t); else live.removeAttribute("transform"); };
+    sync();
+    if (window.MutationObserver) new MutationObserver(sync).observe(mt, { attributes: true, attributeFilter: ["transform"] });
+    ["W", "T"].forEach(function (key) {
+      var g = $("h4-rSki" + key), set = { chairs: [], skiers: [] };
+      if (!g) return;
+      // chairs: up the right-hand cable (most carry a rider), back down the left one (mostly empty)
+      Array.prototype.forEach.call(g.querySelectorAll(".h4-rLift"), function (lg) {
+        var b = lg.getAttribute("data-b").split(" ").map(Number), t = lg.getAttribute("data-t").split(" ").map(Number);
+        var len = Math.sqrt(Math.pow(t[0] - b[0], 2) + Math.pow(t[1] - b[1], 2)), n = Math.max(4, Math.round(len / CHAIR_GAP)), gap = len / n;
+        var L = { b: b, t: t, len: len, ux: (t[0] - b[0]) / len, uy: (t[1] - b[1]) / len };
+        for (var i = 0; i < 2 * n; i++) {
+          var up = i < n, c = { lift: L, up: up, o: (i % n) * gap + (up ? 0 : gap / 2), lap: 0, rider: Math.random() < (up ? 0.7 : 0.12), tf: "" };
+          c.e = el("use", { href: c.rider ? "#h4-rChairR" : "#h4-rChair", fill: RIDER_INK[i % RIDER_INK.length] }, lg);
+          set.chairs.push(c);
+        }
+      });
+      // skiers: two to a run, spread out so a few are always on the way down
+      var sk = g.querySelector(".h4-rSkiers");
+      (g.getAttribute("data-runs") || "").split(" ").forEach(function (id) {
+        var path = $(id);
+        if (!path || !sk) return;
+        var run = resortLine(path.getAttribute("data-c")), w = (path.getAttribute("data-w") || "3 7").split(" ").map(Number);
+        if (!(run.len > 0)) return;
+        run.w0 = w[0]; run.w1 = w[1];
+        for (var i = 0; i < 2; i++) {
+          var k = { run: run, tf: "", op: -1, e: el("circle", { r: 1.6 }, sk) };
+          launchSkier(k, true);
+          if (i) k.d = (k.d + run.len / 2) % run.len;
+          set.skiers.push(k);
+        }
+      });
+      resort.sets[key] = set;
+      moveResort(set, 0);
+    });
+    sizeResort();
+    window.addEventListener("resize", function () { setTimeout(sizeResort, 0); });   // after measure() has picked the crop
+  }
+  // about 2.5 px dots and readable chairs at every screen size
+  function sizeResort() {
+    var m = $("heroBack") && $("heroBack").getScreenCTM && $("heroBack").getScreenCTM(), s = m && m.a > 0 ? m.a : 1;
+    var r = String(Math.round(Math.max(1.3, Math.min(2.4, 1.25 / s)) * 100) / 100), k = Math.max(1, Math.min(1.5, 0.7 / s));
+    for (var key in resort.sets) resort.sets[key].skiers.forEach(function (q) { q.e.setAttribute("r", r); });
+    ["h4-rChair", "h4-rChairR"].forEach(function (id) { var c = $(id); if (c) c.setAttribute("transform", "scale(" + Math.round(k * 100) / 100 + ")"); });
+  }
+  function moveResort(set, dt) {
+    var i, a = resort.tmp;
+    for (i = 0; i < set.chairs.length; i++) {
+      var c = set.chairs[i], L = c.lift, q = c.o + RIDE * resort.t, lap = Math.floor(q / L.len);
+      q -= lap * L.len;
+      if (lap !== c.lap) {   // round the bullwheel inside a station: someone may board (or stay on)
+        c.lap = lap;
+        var r = Math.random() < (c.up ? 0.7 : 0.12);
+        if (r !== c.rider) { c.rider = r; c.e.setAttribute("href", r ? "#h4-rChairR" : "#h4-rChair"); }
+        if (r) c.e.setAttribute("fill", RIDER_INK[Math.floor(Math.random() * RIDER_INK.length)]);
+      }
+      if (c.up) resortTf(c, L.b[0] + L.ux * q + CAB, L.b[1] + L.uy * q);
+      else resortTf(c, L.t[0] - L.ux * q - CAB, L.t[1] - L.uy * q);
+    }
+    for (i = 0; i < set.skiers.length; i++) {
+      var k = set.skiers[i], run = k.run;
+      if (k.wait > 0) { k.wait -= dt; if (k.op !== 0) { k.op = 0; k.e.setAttribute("opacity", "0"); } continue; }
+      k.d += k.v * dt;
+      if (k.d >= run.len) { launchSkier(k, false); continue; }
+      alongRun(run, k.d, a);
+      // gentle S-turns across the run, never past its edges
+      var u = k.d / run.len, hw = (run.w0 + (run.w1 - run.w0) * Math.pow(u, 0.9)) / 2 - 0.9;
+      var off = Math.max(0, hw) * k.amp * Math.sin(k.d / k.wave * 6.283 + k.ph);
+      resortTf(k, a[0] - a[3] * off, a[1] + a[2] * off);
+      // fade in below the top station, out where the run disappears into the trees
+      var op = Math.round(Math.max(0, Math.min(1, k.d / 6, (run.len - k.d) / 10)) * 10) / 10;
+      if (op !== k.op) { k.op = op; k.e.setAttribute("opacity", String(op)); }
+    }
+  }
+  function stepResort(now) {
+    if (perf.lite) { resort.last = now; return; }   // lite mode: a still picture
+    var ms = now - resort.last;
+    if (ms < 96) return;
+    resort.last = now;
+    var dt = Math.min(ms, 120) / 1000, set = resort.sets[layoutName === "tall" ? "T" : "W"];
+    resort.t += dt;
+    if (set) moveResort(set, dt);
+  }
+
   /* ---------- Main loop ---------- */
 
   // The lake only animates while it is on screen; the falling snow keeps going over the village.
@@ -2442,50 +2609,169 @@
       if (rink) { rink.step(now); trackBlades(now); if (skaterKeyFocused) placeSkaterKeys(); }
       perf.odd = !perf.odd;
       if (!perf.lite || perf.odd) drawMarks(now);
-      stepFox(now, dt);
+      stepAnimals(now);
+      stepResort(now);
       applyParallax();
     }
     if (!inShop) tickSnow(now, dt);   // an open shop covers the whole screen
   }
 
-  /* ---------- Fox: trots along the far shore, stops to look around, turns back ---------- */
+  /* ---------- The animals: drawn true to scale for where they stand, with small, calm movements ---------- */
 
-  var fox = { x: 866, dir: 1, target: 866, restUntil: 0, hop: 0 };
-  function placeFox(now) {
-    var node = $("fox"), body = $("h4-foxBody");
-    if (!node) return;
-    node.setAttribute("transform", "translate(" + f(fox.x) + "," + layout.foxPath.y + ")" + (fox.dir < 0 ? " scale(-1,1)" : ""));
-    var walking = fox.target !== fox.x;
-    var bob = walking ? -Math.abs(Math.sin(now / 110)) * 1.6 : 0;
-    var hop = fox.hop > now ? -Math.sin((1 - (fox.hop - now) / 420) * Math.PI) * 14 : 0;
-    if (body) body.setAttribute("transform", "translate(0," + f(bob + hop) + ")");
+  // Each drawing is in centimetres inside a group scaled to its distance (see index.html and style.css).
+  // setT() only touches a part when its transform really changes (resting animals cost nothing to draw);
+  // rot() turns a part round a point of its own drawing.
+  var lastT = {};
+  function setT(id, t) { if (lastT[id] === t) return; var n = $(id); if (n) { n.setAttribute("transform", t); lastT[id] = t; } }
+  function rot(id, deg, x, y) { setT(id, Math.abs(deg) > 0.05 ? "rotate(" + f(deg) + " " + x + " " + y + ")" : ""); }
+  // a gentle ease in and out between 0 and 1
+  function ease(t) { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); }
+
+  // Two malamutes walk the edge of the ice together, stop for a while (a sniff, a slow wag), and turn back.
+  var dogs = { x: 780, dir: 1, target: 780, restUntil: 0, wagUntil: 0, phase: 0, sniffAt: 0, sniffUntil: 0 };
+  function placeDogs(now) {
+    var node = $("malamutes"), pair = $("malPair");
+    if (!node || !pair) return;
+    setT("malamutes", "translate(" + f(dogs.x) + "," + layout.dogPath.y + ")");
+    setT("malPair", dogs.dir < 0 ? "scale(-1,1)" : "");
+    var hit = node.firstElementChild;
+    if (hit && +hit.getAttribute("cx") !== 9 * dogs.dir) hit.setAttribute("cx", 9 * dogs.dir);
+    var walking = dogs.target !== dogs.x && !reduceMotion, wag = now < dogs.wagUntil;
+    ["mal1", "mal2"].forEach(function (p, i) {
+      var ph = dogs.phase + i * 1.4, a = walking ? Math.sin(ph) * 17 : 0;
+      rot(p + "Lf1", a, 23, -42); rot(p + "Lh2", a * 0.8, -20, -46);
+      rot(p + "Lf2", -a, 17, -42); rot(p + "Lh1", -a * 0.8, -26, -46);
+      // tails: a slow sway, a happy fast wag when tapped
+      var t = reduceMotion ? 0 : (wag ? Math.sin(now / 55 + i) * 16 : Math.sin(now / (walking ? 260 : 520) + i * 2) * (walking ? 7 : 4));
+      rot(p + "Tail", t, -33, -58);
+      // heads: up and looking our way while wagging, now and then a sniff at the snow while resting
+      var h = 0;
+      if (wag) h = -9 * ease((now - (dogs.wagUntil - 2600)) / 300);
+      else if (!walking && i === (dogs.sniffAt & 1) && now < dogs.sniffUntil) h = 16 * Math.sin(Math.PI * Math.min(1, (dogs.sniffUntil - now) / 1800));
+      rot(p + "Head", h, 24, -58);
+    });
   }
-  function stepFox(now, dt) {
-    var p = foxRange;
-    if (fox.target === fox.x) {
-      if (now > fox.restUntil) {
+  function stepDogs(now, dt) {
+    var p = dogRange;
+    if (dogs.target === dogs.x) {
+      if (now > dogs.restUntil) {
         // pick somewhere new along the visible shore, a good walk away
         var t = p.x0 + Math.random() * (p.x1 - p.x0), far = Math.min(160, (p.x1 - p.x0) / 3);
-        if (Math.abs(t - fox.x) < far) t = fox.x < (p.x0 + p.x1) / 2 ? p.x1 - Math.random() * far / 2 : p.x0 + Math.random() * far / 2;
-        fox.target = t;
-        fox.dir = t > fox.x ? 1 : -1;
+        if (Math.abs(t - dogs.x) < far) t = dogs.x < (p.x0 + p.x1) / 2 ? p.x1 - Math.random() * far / 2 : p.x0 + Math.random() * far / 2;
+        dogs.target = t;
+        dogs.dir = t > dogs.x ? 1 : -1;
+      } else if (now > dogs.sniffUntil + 2500 && Math.random() < dt * 0.25) {
+        dogs.sniffAt++; dogs.sniffUntil = now + 1800;
       }
     } else {
-      var step = 46 * dt * fox.dir;
-      if (Math.abs(fox.target - fox.x) <= Math.abs(step)) { fox.x = fox.target; fox.restUntil = now + 5000 + Math.random() * 9000; }
-      else fox.x += step;
+      var step = 26 * dt * dogs.dir;
+      dogs.phase += dt * 6.2;
+      if (Math.abs(dogs.target - dogs.x) <= Math.abs(step)) { dogs.x = dogs.target; dogs.restUntil = now + 6000 + Math.random() * 9000; }
+      else dogs.x += step;
     }
-    placeFox(now);
+    placeDogs(now);
+  }
+
+  // The eagle looks round now and then; tapped, it lifts off, circles once and lands back on its perch.
+  var eagle = { lookFrom: 0, lookUntil: 0, nextLook: 4000, ruffleAt: 9000 }, eagleFlight = null;
+  function stepEagle(now) {
+    if (eagleFlight) { flyEagle(now); return; }
+    if (now > eagle.nextLook) { eagle.lookFrom = now; eagle.lookUntil = now + 1800 + Math.random() * 1800; eagle.nextLook = eagle.lookUntil + 4000 + Math.random() * 6000; }
+    // looking back over its shoulder: the white head turns round its neck
+    var k = now < eagle.lookUntil ? ease(Math.min(now - eagle.lookFrom, eagle.lookUntil - now) / 350) : 0;
+    setT("eagleHead", k > 0.001 ? "translate(" + f(16 * k) + " 0) scale(" + f((1 - 2 * k) * 100) / 100 + " 1)" : "");
+    // a feather ruffle: the folded wing lifts a little and settles
+    var r = now - eagle.ruffleAt;
+    if (r > 700) { eagle.ruffleAt = now + 9000 + Math.random() * 9000; r = 0; }
+    rot("eagleWing", r > 0 ? -5 * Math.sin(Math.PI * r / 700) : 0, 0, -48);
+  }
+  function eagleHome() {
+    // the perch in scene units (style.css sets it: a shore pine, or the hut's roof ridge on phones)
+    return layoutName === "tall" ? { x: 955, y: 466, face: -1 } : { x: 470, y: 494, face: 1 };
+  }
+  function liftEagle(now) {
+    if (eagleFlight || reduceMotion) return;
+    eagleFlight = { t0: now, dur: 5600 };
+    $("eagleSit").setAttribute("display", "none");
+    $("eagleFly").setAttribute("display", "inline");
+    flyEagle(now);
+  }
+  function landEagle() {
+    eagleFlight = null;
+    var sit = $("eagleSit"), fly = $("eagleFly");
+    if (sit) sit.setAttribute("display", "inline");
+    if (fly) fly.setAttribute("display", "none");
+  }
+  // Where the middle of the flying eagle is t (0..1) into its flight, relative to its feet on the perch:
+  // up to its circle, once round, and back down.
+  function eaglePath(t) {
+    var P = eagleHome(), L = layout.eagleLoop, y0 = -8, a0 = Math.atan2((P.y + y0 - L.cy) / L.ry, (P.x - L.cx) / L.rx);
+    var at = function (a) { return { x: L.cx + L.rx * Math.cos(a) - P.x, y: L.cy + L.ry * Math.sin(a) - P.y }; };
+    var S = at(a0), k;
+    if (t < 0.16) { k = ease(t / 0.16); return { x: S.x * k, y: y0 + (S.y - y0) * k - Math.sin(Math.PI * k) * 10 }; }
+    if (t > 0.86) { k = ease((1 - t) / 0.14); return { x: S.x * k, y: y0 + (S.y - y0) * k - Math.sin(Math.PI * k) * 6 }; }
+    // once round: up and away from the perch side first
+    return at(a0 - P.face * 2 * Math.PI * (t - 0.16) / 0.7);
+  }
+  function flyEagle(now) {
+    var fly = $("eagleFly"), t = (now - eagleFlight.t0) / eagleFlight.dur;
+    if (t >= 1 || !fly) { landEagle(); return; }
+    var p = eaglePath(t), q = eaglePath(Math.min(1, t + 0.01)), vx = q.x - p.x, vy = q.y - p.y;
+    var face = Math.abs(vx) > 0.05 ? (vx > 0 ? 1 : -1) : (eagleFlight.face || eagleHome().face);
+    eagleFlight.face = face;
+    // big wingbeats on the way up and down, a long glide round the circle with a few easy beats; it tilts with the climb
+    var beat = t < 0.2 || t > 0.82 || (t > 0.45 && t < 0.53), a = beat ? -85 + 62 * Math.sin(now / 75) : -58 + 4 * Math.sin(now / 420);
+    var bank = Math.max(-12, Math.min(12, -vy * 5));
+    setT("eagleFly", "translate(" + f(p.x) + " " + f(p.y) + ") scale(" + f(face * 25) / 100 + " .25) rotate(" + f(bank) + ")");
+    setT("eagleWingN", "translate(-1 -6) rotate(" + f(a) + ")");
+    setT("eagleWingF", "translate(3 -9) rotate(" + f(a + 16) + ")");
+  }
+  // the box the eagle's flight covers, in scene units (the toast keeps clear of it)
+  function eagleLoopBox() {
+    var L = layout.eagleLoop, P = eagleHome();
+    return [Math.min(L.cx - L.rx, P.x) - 28, Math.min(L.cy - L.ry, P.y) - 26, Math.max(L.cx + L.rx, P.x) + 28, Math.max(L.cy + L.ry, P.y) + 10];
+  }
+
+  // The parrot tilts its head now and then; tapped, it bobs up and down.
+  var parrot = { tiltFrom: 0, tiltUntil: 0, nextTilt: 2500, tilt: 12, bobUntil: 0 };
+  function stepParrot(now) {
+    if (now > parrot.nextTilt) {
+      parrot.tiltFrom = now;
+      parrot.tiltUntil = now + 1400 + Math.random() * 1400;
+      parrot.nextTilt = parrot.tiltUntil + 2500 + Math.random() * 4500;
+      parrot.tilt = (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 8);
+    }
+    var k = now < parrot.tiltUntil ? ease(Math.min(now - parrot.tiltFrom, parrot.tiltUntil - now) / 260) : 0;
+    var bob = now < parrot.bobUntil ? Math.abs(Math.sin((parrot.bobUntil - now) / 1400 * 4 * Math.PI)) : 0;
+    rot("parrotHead", parrot.tilt * k + bob * 14, -1, -19);
+    setT("parrotBody", bob > 0.01 ? "translate(0 " + f(-3 * bob) + ")" : "");
+    rot("parrotTail", bob ? -8 * bob : 0, 2, -5);
+  }
+
+  // They are small and far away, so about 30 steps a second look just as smooth and cost fewer repaints of the
+  // big back layer; only the flying eagle (it moves the furthest) keeps every frame.
+  var animalsLast = 0;
+  function stepAnimals(now) {
+    var ms = now - animalsLast;
+    if (eagleFlight) stepEagle(now);
+    if (ms >= 0 && ms < 25) return;
+    animalsLast = now;
+    stepDogs(now, Math.min(ms / 1000, 0.07));
+    if (!eagleFlight) stepEagle(now);
+    stepParrot(now);
   }
 
   /* ---------- Secrets ---------- */
 
-  var SECRETS = ["bell", "owl", "fox", "deer", "skater"];
+  var SECRETS = ["bell", "owl", "malamutes", "eagle", "parrot", "skater"];
+  var SPOTS = ["eagle", "owl", "malamutes", "bell", "parrot"];   // the secrets you tap in the scene (the skaters have their own keys)
+  var SPOT_ART = { eagle: ".eagle-art", owl: "#owl > g", malamutes: "#malPair", parrot: ".parrot-art" };   // the animals' drawings
   var found = {};
   try { found = JSON.parse(localStorage.getItem("nic-village-found") || "{}") || {}; } catch (e) { found = {}; }
   var toastTimer;
-  // Park the toast where it hides the least. It never covers the title words, the navigation pills, the bell or the
-  // scroll cue, and it stays below the title. It covers as little as it can of the owl, deer, fox and bell, the hut,
+  // Park the toast where it hides the least. It never covers the title words, the navigation pills, the bell, the
+  // animal that was just found (and the eagle's flight) or the scroll cue, and it stays below the title. It covers as
+  // little as it can of the owl, the malamutes, the eagle, the parrot and the bell, the hut, the chairlifts,
   // the skaters (where they are now, and the ice they will skate across) and the banner. It tries a grid of spots:
   // under the banner in the middle first, then the sides and lower down.
   function placeToast() {
@@ -2494,38 +2780,68 @@
     var hr = hero.getBoundingClientRect(), W = hero.clientWidth, H = hero.clientHeight, s = view.s;
     var rel = function (n, pad) { var q = n.getBoundingClientRect(); pad = pad || 0; return { l: q.left - hr.left - pad, r: q.right - hr.left + pad, t: q.top - hr.top - pad, b: q.bottom - hr.top + pad }; };
     var scene = function (l, tp, r, b, pad) { pad = pad || 0; return { l: view.ox + l * s - pad, t: view.oy + tp * s - pad, r: view.ox + r * s + pad, b: view.oy + b * s + pad }; };
-    var hard = titleBoxes.slice(), soft = [], navB = 0, wordsB = 0;
+    var hard = titleBoxes.slice(), soft = [], navB = 0, wordsB = 0, hot = toastFor && $(toastFor);
     titleBoxes.forEach(function (q) { wordsB = Math.max(wordsB, q.b); });
     Array.prototype.forEach.call(document.querySelectorAll(".nav .logo, .nav nav, .nav .found"), function (n) { var q = rel(n, 4); hard.push(q); navB = Math.max(navB, q.b); });
     var bell = document.querySelector("#bell .bell-body");
     if (bell) hard.push(rel(bell, 8));
-    ["owl", "deer", "fox", "bell"].forEach(function (id) { var n = $(id); n = n && (n.firstElementChild || n); if (n) soft.push([rel(n, 12), 8]); });   // their hit areas, with room round them (an owl's ear tufts)
+    // the other animals by their drawings and the bell by its hit area, with room round them (a far animal's tap target
+    // is much bigger than its drawing, and the toast lets taps through); the one just found by its whole tap target
+    SPOTS.forEach(function (id) {
+      var n = SPOT_ART[id] ? document.querySelector(SPOT_ART[id]) : $(id), q;
+      if (n && !SPOT_ART[id]) n = n.firstElementChild || n;
+      q = n && rel(n, 12);
+      if (q && q.r - q.l > 24) soft.push([q, 8]);
+    });
+    if (hot) hard.push(rel(hot.firstElementChild || hot, 10));
+    if (toastFor === "eagle" && eagleFlight) { var e = eagleLoopBox(); hard.push(scene(e[0], e[1], e[2], e[3], 6)); }
     soft.push([scene(875, 425, 1035, 600, 4), 3]);                     // the hut
+    // the three chairlifts on the far slopes (the crop that is not drawn has no size)
+    Array.prototype.forEach.call(document.querySelectorAll("#h4-rSki .h4-rLift"), function (n) { var q = rel(n, 4); if (q.r - q.l > 8) soft.push([q, 2]); });
     if (rink && rink.boxes) rink.boxes().forEach(function (b) { soft.push([scene(b[0], b[1], b[2], b[3], 8), 3]); });
     soft.push([scene(-1e4, layout.ice.farY - layout.ice.skaterHeightFar, 1e4, 1e4), 0.4]);   // the ice, from the far skaters' heads down
     if (titlePaper) soft.push([titlePaper, 1]);
     var cue = document.querySelector(".scroll-cue"), cueT = cue ? rel(cue).t : H;
-    var tw = Math.min(t.offsetWidth, W - 8), th = t.offsetHeight;
-    var over = function (q, l, top) { return Math.max(0, Math.min(l + tw, q.r) - Math.max(l, q.l)) * Math.max(0, Math.min(top + th, q.b) - Math.max(top, q.t)); };
-    var top0 = Math.max(navB + 4, wordsB + 8), top1 = cueT - th - 8, pref = Math.max(top0, titleBottom + 10);
-    var tops = [pref], step = Math.max(8, th / 3);
-    for (var y = top0; y <= top1; y += step) tops.push(y);
-    var side = Math.max(0, W / 2 - 16 - tw / 2), mids = [W / 2, W / 2 - side, W / 2 + side, W / 2 - side / 2, W / 2 + side / 2];
-    var best = null, bestCost = 1e18;
-    tops.forEach(function (top) {
-      mids.forEach(function (cx) {
-        var l = cx - tw / 2, cost = 0;
-        hard.forEach(function (q) { cost += 1e4 * over(q, l, top); });
-        soft.forEach(function (q) { cost += q[1] * over(q[0], l, top); });
-        if (top < top0 || top > top1) cost += 1e8;
-        cost += 4 * Math.abs(cx - W / 2) + 2 * Math.abs(top - pref);   // otherwise, under the banner in the middle
-        if (cost < bestCost - 0.5) { best = [cx, top]; bestCost = cost; }
+    var iceT = view.oy + (layout.ice.farY - layout.ice.skaterHeightFar) * s;
+    var spot = function (offIce) {
+      var tw = Math.min(t.offsetWidth, W - 8), th = t.offsetHeight;
+      var over = function (q, l, top) { return Math.max(0, Math.min(l + tw, q.r) - Math.max(l, q.l)) * Math.max(0, Math.min(top + th, q.b) - Math.max(top, q.t)); };
+      var top0 = Math.max(navB + 4, wordsB + 8), top1 = cueT - th - 8, pref = Math.max(top0, titleBottom + 10);
+      var tops = [pref], step = Math.max(8, th / 3);
+      for (var y = top0; y <= top1; y += step) tops.push(y);
+      var side = Math.max(0, W / 2 - 16 - tw / 2), mids = [W / 2, W / 2 - side, W / 2 + side, W / 2 - side / 2, W / 2 + side / 2];
+      var best = null, bestCost = 1e18;
+      tops.forEach(function (top) {
+        if (offIce && top + th > iceT) return;
+        mids.forEach(function (cx) {
+          var l = cx - tw / 2, cost = 0, bad = 0;
+          hard.forEach(function (q) { bad += over(q, l, top); });
+          soft.forEach(function (q) { cost += q[1] * over(q[0], l, top); });
+          if (top < top0 || top > top1) bad += 1e4;
+          cost += 1e4 * bad + 4 * Math.abs(cx - W / 2) + 2 * Math.abs(top - pref);   // otherwise, under the banner in the middle
+          if (cost < bestCost - 0.5) { best = [cx, top, bad]; bestCost = cost; }
+        });
       });
-    });
-    if (best) { t.style.left = Math.round(best[0]) + "px"; t.style.top = Math.round(best[1]) + "px"; }
+      return best && { cx: best[0], top: best[1], cost: bestCost, clean: !best[2], onIce: best[1] + th > iceT };
+    };
+    // On short screens the cheapest spot can be down on the ice, where the skaters would skate under it. Then it takes
+    // the best clear spot off the ice instead, on one line or on two (beside the bell), even if that hides a little of
+    // a lift or another animal for those few seconds.
+    t.style.maxWidth = "";
+    var best = spot(), one, two;
+    if (best && best.onIce) {
+      one = spot(true);
+      t.style.maxWidth = Math.ceil(t.offsetWidth * 0.6) + "px";
+      two = spot(true);
+      if (two && two.clean && !(one && one.clean && one.cost <= two.cost)) best = two;
+      else { t.style.maxWidth = ""; if (one && one.clean) best = one; }
+    }
+    if (best) { t.style.left = Math.round(best.cx) + "px"; t.style.top = Math.round(best.top) + "px"; }
   }
-  function say(text) {
+  var toastFor = "";   // the secret the toast is about: it never covers that one
+  function say(text, about) {
     var t = $("toast");
+    toastFor = about || "";
     t.textContent = text;
     placeToast();
     t.classList.add("show");
@@ -2535,7 +2851,7 @@
   function updateFound() {
     var n = SECRETS.filter(function (k) { return found[k]; }).length;
     $("foundCount").textContent = n;
-    if (n === SECRETS.length) { $("found").classList.add("all"); $("found").innerHTML = "All <b>5</b> found"; }
+    if (n === SECRETS.length) { $("found").classList.add("all"); $("found").innerHTML = "All <b>" + n + "</b> found"; }
   }
   function discover(id) {
     if (!found[id]) {
@@ -2544,22 +2860,28 @@
       updateFound();
     }
   }
+  var PARROT_LINES = ["\u201CNice axel!\u201D", "\u201CHello, skaters!\u201D", "\u201CPretty bird!\u201D"], parrotLine = 0;
   var actions = {
     owl: function () {
       var h = $("owlHead"); h.classList.add("turn");
       setTimeout(function () { h.classList.remove("turn"); }, 1600);
-      say("The owl has been watching the skaters all evening.");
+      say("The owl has been watching the skaters all evening.", "owl");
     },
-    fox: function () {
-      fox.hop = performance.now() + 420;
-      fox.restUntil = 0;
-      say("A fox hurries home along the shore.");
+    malamutes: function () {
+      // they stop where they are and wag (and walk on after a little rest)
+      var now = performance.now();
+      dogs.target = dogs.x; dogs.wagUntil = now + 2600; dogs.restUntil = now + 4000; dogs.sniffUntil = 0;
+      placeDogs(now);
+      say(reduceMotion ? "Two malamutes in matching purple scarves say hello." : "Two malamutes in matching purple scarves stop to wag hello.", "malamutes");
     },
-    deer: function () {
-      var h = $("deerHead"); h.classList.add("up");
-      setTimeout(function () { h.classList.remove("up"); }, 2000);
-      // the glacier is only drawn on the wide crop (style.css hides it on phones)
-      say(layoutName === "tall" ? "The deer looks up at the snowy peaks." : "The deer looks up at the glacier.");
+    eagle: function () {
+      liftEagle(performance.now());
+      say(reduceMotion ? "A bald eagle keeps watch over the lake." :
+        "The eagle lifts off, circles once and lands back on " + (layoutName === "tall" ? "the hut roof." : "its pine."), "eagle");
+    },
+    parrot: function () {
+      parrot.bobUntil = performance.now() + 1400;
+      say((reduceMotion ? "The parrot chirps: " : "The parrot bobs and chirps: ") + PARROT_LINES[parrotLine++ % PARROT_LINES.length], "parrot");
     },
     bell: function () {
       var b = $("bell");
@@ -2568,11 +2890,17 @@
     }
   };
   function bindSecrets() {
-    ["bell", "owl", "fox", "deer"].forEach(function (id) {
-      var node = $(id);
+    SPOTS.forEach(function (id) {
+      var node = $(id), tap = $(id + "Tap");
       function go(e) { e.stopPropagation(); actions[id](); discover(id); }
       node.addEventListener("click", go);
       node.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
+      // a tap target of its own under the skaters (the parrot's): it answers taps and lights the drawing up on hover
+      if (tap) {
+        tap.addEventListener("click", go);
+        tap.addEventListener("mouseenter", function () { node.classList.add("hover"); });
+        tap.addEventListener("mouseleave", function () { node.classList.remove("hover"); });
+      }
     });
     $("heroBack").addEventListener("click", function (e) { gust(e.clientX); });
     updateFound();
@@ -2727,7 +3055,9 @@
     tracker: "M-10,9 V1 M-3,9 V-4 M4,9 V-9 M11,9 V-2",
     coach: "M0,-13 Q2,-2 13,0 Q2,2 0,13 Q-2,2 -13,0 Q-2,-2 0,-13 Z",
     language: "M-12,-9 H12 V5 H-2 L-8,11 V5 H-12 Z",
-    calendar: "M-11,-7 H11 V10 H-11 Z M-11,-2 H11 M-5,-12 V-5 M5,-12 V-5"
+    calendar: "M-11,-7 H11 V10 H-11 Z M-11,-2 H11 M-5,-12 V-5 M5,-12 V-5",
+    // the skate fitting shop: a figure skate (boot, blade with its toe pick curling up at the front)
+    skate: "M-9,-11 V3 H8 Q12,3 12,0 Q12,-3 7,-4 L1,-6 V-11 Z M-12,9 H9 Q13,9 13,5 M-6,3 V9 M6,3 V9"
   };
   NEON.castle = NEON.globe = NEON.mountain;
 
@@ -2738,10 +3068,16 @@
     { wall: "#d9773a", trim: "#fff1e0", awn: "#c0532a", door: "#5a2c18", neon: "#9fb8ff" },
     { wall: "#2f7f8f", trim: "#e6fbff", awn: "#1f5f6f", door: "#173f4a", neon: "#ffd36b" }
   ];
+  // the skate fitting shop when it is an extra shop of its own (inside an artifact's shop it keeps that shop's colours)
+  var FIT_PALETTE = { wall: "#c4507f", trim: "#fff0f6", awn: "#6b4aa8", door: "#4a2350", neon: "#7be3ff" };
 
-  function shopSVG(a, i) {
-    var p = PALETTE[i % PALETTE.length], round = i % 2 === 1, id = "s" + i;
-    var art = ART[a.art] || ART.mountain, neon = NEON[a.art] || NEON.mountain;
+  // One shop front. A special shop (the skate fitting shop) can swap parts through o: pal (colours), round (roof),
+  // chimney, id (prefix for the gradients), sign (the words on the sign), win (the shop window) and neon (over the door).
+  function shopSVG(a, i, o) {
+    o = o || {};
+    var p = o.pal || PALETTE[i % PALETTE.length], round = o.round != null ? o.round : i % 2 === 1, id = o.id || "s" + i;
+    var art = ART[a && a.art] || ART.mountain, neon = o.neon || NEON[a && a.art] || NEON.mountain;
+    var chimney = o.chimney != null ? o.chimney : i % 2 === 0;
     var bulbs = "", colors = ["#ffd36b", "#ff8fc8", "#7be3ff", "#ff7a59"];
     for (var b = 0; b < 13; b++) {
       bulbs += '<circle class="bulb" style="animation-delay:' + f(b * 0.23) + 's" cx="' + (24 + b * 16) + '" cy="' + (round ? 132 : 130) + '" r="3.4" fill="' + colors[b % 4] + '"/>';
@@ -2760,18 +3096,18 @@
     return '<svg viewBox="0 0 240 330" aria-hidden="true">' +
       '<defs><linearGradient id="' + id + 'in" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a2a4a"/><stop offset="1" stop-color="#22142e"/></linearGradient>' +
       '<radialGradient id="' + id + 'gl" cx=".5" cy=".2" r=".75"><stop offset="0" stop-color="#ffd58a" stop-opacity=".95"/><stop offset=".55" stop-color="#ff9f6a" stop-opacity=".35"/><stop offset="1" stop-color="#ff9f6a" stop-opacity="0"/></radialGradient></defs>' +
-      (i % 2 === 0 ? '<rect x="166" y="46" width="20" height="56" fill="#3a2a40"/><rect x="162" y="40" width="28" height="9" rx="3" fill="#ffffff"/><g class="smoke"><circle cx="176" cy="30" r="6"/><circle cx="182" cy="14" r="8"/><circle cx="178" cy="-4" r="10"/></g>' : "") +
+      (chimney ? '<rect x="166" y="46" width="20" height="56" fill="#3a2a40"/><rect x="162" y="40" width="28" height="9" rx="3" fill="#ffffff"/><g class="smoke"><circle cx="176" cy="30" r="6"/><circle cx="182" cy="14" r="8"/><circle cx="178" cy="-4" r="10"/></g>' : "") +
       roof +
       '<rect x="18" y="128" width="204" height="202" fill="' + p.wall + '"/>' +
       '<path d="M44,128 V330 M74,128 V330 M104,128 V330 M134,128 V330 M164,128 V330 M194,128 V330" stroke="#000" stroke-opacity=".08" stroke-width="2"/>' +
       bulbs +
       '<rect class="shop-sign" x="48" y="142" width="144" height="28" rx="5" fill="' + p.trim + '"/>' +
-      '<text x="120" y="161" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="12" font-weight="800" letter-spacing="1.5" fill="' + p.wall + '">ARTIFACT ' + (a.number) + '</text>' +
+      (o.sign || '<text x="120" y="161" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="12" font-weight="800" letter-spacing="1.5" fill="' + p.wall + '">ARTIFACT ' + (a.number) + '</text>') +
       stripes +
       '<rect x="30" y="200" width="116" height="96" fill="url(#' + id + 'in)"/>' +
       '<rect class="win-glow" x="30" y="200" width="116" height="96" fill="url(#' + id + 'gl)"/>' +
-      '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + art + '</svg>' +
-      '<path d="M30,200 h116 v96 h-116 Z M88,200 V296 M30,248 H146" fill="none" stroke="' + p.trim + '" stroke-width="5"/>' +
+      (o.win || '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + art + '</svg>' +
+        '<path d="M30,200 h116 v96 h-116 Z M88,200 V296 M30,248 H146" fill="none" stroke="' + p.trim + '" stroke-width="5"/>') +
       '<rect x="24" y="294" width="128" height="10" rx="5" fill="#ffffff"/>' +
       '<path class="door-light" d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="#ffd58a"/>' +
       '<g class="shop-door"><path d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="' + p.door + '"/>' +
@@ -2787,18 +3123,146 @@
     return String(s).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; });
   }
 
+  /* ---------- The skate fitting shop: About me and the resume (window.ABOUT in cards.js) ---------- */
+
+  // Used when cards.js has no ABOUT block, or for any field that is missing or broken, so About always finds nic.
+  var ABOUT_DEFAULT = {
+    fittingShop: 1,
+    shopName: "Skate Fitting",
+    greeting: "Hi, I'm nic",
+    about: "I have a passion for figure skating, ask me about how to join UW Figure Skating Team. I'm learning to build websites and apps. This quarter I'm making five projects,and each one gets its own little shop in the village by the lake.",
+    traits: ["Hardworking", "Not afraid to fail", "Attentive"],
+    keeperSays: "Welcome in! Let's find you the perfect fit.",
+    resumeLinkLabel: "Download my resume"
+  };
+  function isText(v) { return (typeof v === "string" && v.trim() !== "") || (typeof v === "number" && isFinite(v)); }
+  function textOr(v, def) { return isText(v) ? String(v).trim() : def; }
+  function textList(v) { return (Array.isArray(v) ? v : isText(v) ? [v] : []).filter(isText).map(function (t) { return String(t).trim(); }); }
+  // Tidy up window.ABOUT field by field, so one slip in cards.js never hides the shop or the page
+  function readAbout(src) {
+    var d = ABOUT_DEFAULT;
+    if (!src || typeof src !== "object") src = {};
+    var resume = Array.isArray(src.resume) ? src.resume : (src.resume && typeof src.resume === "object" ? [src.resume] : []);
+    return {
+      fittingShop: src.fittingShop === undefined ? d.fittingShop : src.fittingShop,
+      shopName: textOr(src.shopName, d.shopName),
+      greeting: textOr(src.greeting, d.greeting),
+      about: textOr(src.about, d.about),
+      traits: src.traits === undefined ? d.traits : textList(typeof src.traits === "string" ? src.traits.split(",") : src.traits),
+      keeperSays: textOr(src.keeperSays, d.keeperSays),
+      resume: resume.map(function (sec) {
+        return sec && typeof sec === "object" ? { heading: textOr(sec.heading, ""), items: textList(sec.items) } : null;
+      }).filter(function (sec) { return sec && (sec.heading || sec.items.length); }),
+      resumeLink: textOr(src.resumeLink, ""),
+      resumeLinkLabel: textOr(src.resumeLinkLabel, d.resumeLinkLabel)
+    };
+  }
+
+  // The street: one shop per artifact card. The skate fitting shop is either one of them (ABOUT.fittingShop is an
+  // artifact number; that card stays inside on its own tab) or an extra shop at the start of the street ("extra" or 0,
+  // or a number that matches no card). data-i on each shop is its place on the street.
+  var ABOUT = null, SHOPS = [];
+  function buildShopList() {
+    try { ABOUT = readAbout(window.ABOUT); } catch (e) { ABOUT = readAbout({}); }
+    var list = Array.isArray(window.ARTIFACTS) ? window.ARTIFACTS : [], want = ABOUT.fittingShop, host = -1;
+    if (isText(want) && +want > 0) {
+      for (var k = 0; k < list.length; k++) if (list[k] && +list[k].number === +want) { host = k; break; }
+    }
+    SHOPS = list.map(function (a, ai) { return { a: a, ai: ai, fit: ai === host }; });
+    if (host < 0) SHOPS.unshift({ a: null, ai: -1, fit: true });
+  }
+  function fitIndex() {
+    for (var i = 0; i < SHOPS.length; i++) if (SHOPS[i].fit) return i;
+    return -1;
+  }
+  function fitPalette(s) { return s.a ? PALETTE[s.ai % PALETTE.length] : FIT_PALETTE; }
+
+  // The words on a shop sign, made smaller (and at worst squeezed) until they fit the 144 x 28 sign
+  function signText(t, fill) {
+    var size = 12, ls = 1.5, room = 130;
+    var width = function () { return t.length * size * 0.8 + (t.length - 1) * ls; };   // a little wider than Unbounded really is
+    while (width() > room && size > 8.5) { size -= 0.5; ls = Math.max(0.5, ls - 0.2); }
+    return '<text x="120" y="' + f(156 + size * 0.41) + '" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="' + f(size) +
+      '" font-weight="800" letter-spacing="' + f(ls) + '" fill="' + fill + '"' + (width() > room ? ' textLength="' + room + '" lengthAdjust="spacingAndGlyphs"' : "") +
+      ">" + esc(t.toUpperCase()) + "</text>";
+  }
+
+  // The fitting shop's window display (a 120 x 90 box like ART): a white figure skate on a little shelf,
+  // and two soft blade guards hanging from a brass rail, a bunny and a strawberry
+  function fitWindowArt(p) {
+    var bunny =
+      '<path d="M97,13 V24" stroke="#f2b83f" stroke-width="1.2"/>' +
+      '<ellipse cx="104.5" cy="21" rx="2.2" ry="5.4" transform="rotate(-12 104.5 21)" fill="#ffe3ee"/><ellipse cx="109.5" cy="21" rx="2.2" ry="5.4" transform="rotate(12 109.5 21)" fill="#ffe3ee"/>' +
+      '<ellipse cx="104.6" cy="21.6" rx="1" ry="3.4" transform="rotate(-12 104.6 21.6)" fill="#ff8fc8"/><ellipse cx="109.4" cy="21.6" rx="1" ry="3.4" transform="rotate(12 109.4 21.6)" fill="#ff8fc8"/>' +
+      '<rect x="80" y="24" width="35" height="11" rx="5.5" fill="#ffe3ee"/><circle cx="80.5" cy="29.5" r="2.6" fill="#ffffff"/>' +
+      '<circle cx="104" cy="29" r=".95" fill="#1d1420"/><circle cx="110" cy="29" r=".95" fill="#1d1420"/><ellipse cx="107" cy="31.2" rx="1" ry=".7" fill="#e0457a"/>' +
+      '<ellipse cx="102.2" cy="31.4" rx="1.6" ry=".9" fill="#ff8fc8" opacity=".6"/><ellipse cx="111.8" cy="31.4" rx="1.6" ry=".9" fill="#ff8fc8" opacity=".6"/>';
+    var berry =
+      '<path d="M103,13 V44" stroke="#f2b83f" stroke-width="1.2"/>' +
+      '<rect x="82" y="44" width="33" height="11" rx="5.5" fill="#e0457a"/><rect x="84" y="45.5" width="28" height="2.6" rx="1.3" fill="#ff8fc8" opacity=".55"/>' +
+      '<g fill="#ffd36b"><ellipse cx="90" cy="51" rx=".7" ry="1"/><ellipse cx="95" cy="48.6" rx=".7" ry="1"/><ellipse cx="100" cy="51.4" rx=".7" ry="1"/><ellipse cx="105" cy="48.8" rx=".7" ry="1"/><ellipse cx="110" cy="51" rx=".7" ry="1"/></g>' +
+      '<path d="M82,49.5 L78.5,45.5 L83.5,47 L84,43 L86,47.5 L89.5,45.8 L87.5,49.5 L89.5,53.2 L86,51.5 L84,56 L83.5,52 L78.5,53.5 Z" fill="#2f9a6a"/>';
+    var skate =
+      '<ellipse cx="44" cy="77.5" rx="34" ry="3.6" fill="#ff8fc8" opacity=".35"/>' +
+      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L60,66 C66,66 69,63 68,58 C67,53 62,51 56,49 C50,47 45,42 43,34 L42,14 Z" fill="#ffffff"/>' +
+      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L24,66 L24,60 C25,46 26.5,30 27.5,14 Z" fill="#e2ddef"/>' +
+      '<rect x="20" y="10.5" width="25" height="6" rx="3" fill="#f3eefe"/>' +
+      '<path d="M41.5,17.5 L35.5,21 L42,23.5 L36,27 L42.8,29.5 L37.5,33 L45.5,35.5 L41.5,39 L51,41.5" fill="none" stroke="#ff8fc8" stroke-width="1.5" stroke-linejoin="round"/>' +
+      '<path d="M41,13 c-6,-6.5 -10,.5 0,0 c6,-6.5 10,.5 0,0" fill="none" stroke="#ff8fc8" stroke-width="1.4"/>' +
+      '<rect x="18" y="59.5" width="10" height="6.5" rx="1" fill="#cfc9e3"/><rect x="18" y="66" width="46" height="2.8" rx="1.2" fill="#cfc9e3"/>' +
+      '<path d="M21,68.5 h9 l-1,5.2 h-7 Z M50,68.5 h10 l-1,5.2 h-8 Z" fill="#c9d1e0"/>' +
+      '<path d="M14,73.5 H65 C70,73.5 73,71.2 73.4,67.2 L75.6,67.2 C76.6,73.4 72.6,77.2 65.6,77.2 H16 C13,77.2 12.4,73.5 14,73.5 Z" fill="#e8edf6"/>' +
+      '<path d="M15,76.2 H65.5" stroke="#aab2c6" stroke-width="1"/><path d="M75.2,66.8 l2.4,.9 l-2,1 l2.2,1.1 l-2,1" fill="none" stroke="#c9d1e0" stroke-width="1"/>' +
+      '<path d="M64,18 L65.3,21.7 L69,23 L65.3,24.3 L64,28 L62.7,24.3 L59,23 L62.7,21.7 Z" fill="#fff2c8"/>';
+    return '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' +
+        '<rect x="0" y="80" width="120" height="6" rx="1.5" fill="#a8794a"/><rect x="0" y="80" width="120" height="1.6" fill="#c79a63"/>' +
+        '<rect x="77" y="10.5" width="40" height="2.6" rx="1.3" fill="#f2b83f"/>' +
+        skate + bunny + berry +
+      "</svg>" +
+      // one big display pane: no window bars across the skate
+      '<path d="M30,200 h116 v96 h-116 Z" fill="none" stroke="' + p.trim + '" stroke-width="5"/>';
+  }
+
+  // The fitting shop's front: the same shop as the others, with its own sign, window display and neon skate
+  function fitShopSVG(s) {
+    var p = fitPalette(s);
+    return shopSVG(s.a, s.a ? s.ai : 0, {
+      pal: p, id: "sf",
+      round: s.a ? s.ai % 2 === 1 : true,   // as an extra shop it is round, beside the pointed roof of shop 1
+      chimney: s.a ? s.ai % 2 === 0 : false,
+      sign: signText(ABOUT.shopName, p.wall),
+      win: fitWindowArt(p),
+      neon: NEON.skate
+    });
+  }
+
+  function artifactShopHTML(s, i) {
+    var a = s.a, done = a.status === "done";
+    return '<button type="button" class="shop" data-i="' + i + '" aria-label="Artifact ' + esc(a.number) + ': ' + esc(a.title) + '. Step inside">' +
+      shopSVG(a, s.ai) +
+      '<span class="shop-label"><span class="shop-head"><span class="shop-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Open" : "Idea") + "</span></span>" +
+      '<span class="shop-title">' + esc(a.title) + "</span>" +
+      '<span class="shop-open">Step inside &rarr;</span></span>' +
+      "</button>";
+  }
+  function fitShopHTML(s, i) {
+    var a = s.a, also = a ? "Artifact " + esc(a.number) + ": " + esc(a.title) : "";
+    return '<button type="button" class="shop shop-fit" data-i="' + i + '" aria-label="' + esc(ABOUT.shopName) + " shop: About me and resume" + (a ? ", and " + also : "") + '. Step inside">' +
+      fitShopSVG(s) +
+      '<span class="shop-label"><span class="shop-head"><span class="shop-num">Start here</span><span class="chip done">Open</span></span>' +
+      '<span class="shop-title">About me &amp; resume</span>' +
+      (a ? '<span class="shop-also">+ ' + also + "</span>" : "") +
+      '<span class="shop-open">Step inside &rarr;</span></span>' +
+      "</button>";
+  }
+
   function renderShops() {
-    var box = $("street"), list = window.ARTIFACTS || [];
-    if (!list.length) { box.innerHTML = '<p class="load-note">No cards found. Check cards.js for a missing quote or comma.</p>'; return; }
-    box.innerHTML = list.map(function (a, i) {
-      var done = a.status === "done";
-      return '<button type="button" class="shop" data-i="' + i + '" aria-label="Artifact ' + esc(a.number) + ': ' + esc(a.title) + '. Step inside">' +
-        shopSVG(a, i) +
-        '<span class="shop-label"><span class="shop-head"><span class="shop-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Open" : "Idea") + "</span></span>" +
-        '<span class="shop-title">' + esc(a.title) + "</span>" +
-        '<span class="shop-open">Step inside &rarr;</span></span>' +
-        "</button>";
-    }).join("");
+    var box = $("street");
+    buildShopList();
+    var cards = Array.isArray(window.ARTIFACTS) && window.ARTIFACTS.length;
+    box.style.setProperty("--shops", Math.max(5, SHOPS.length));   // one column per shop, never wider than a fifth
+    box.innerHTML = (cards ? "" : '<p class="load-note">No cards found. Check cards.js for a missing quote or comma.</p>') +
+      SHOPS.map(function (s, i) { return s.fit ? fitShopHTML(s, i) : artifactShopHTML(s, i); }).join("");
     box.addEventListener("click", function (e) {
       var btn = e.target.closest(".shop");
       if (btn) enterShop(+btn.getAttribute("data-i"), true);
@@ -2902,6 +3366,783 @@
     "</div>";
   }
 
+  /* ====== FITTING SHOP ART ==========================================================================
+     The drawings inside the skate fitting shop, all called from fitInteriorHTML() below and sized by their wrappers
+     in style.css:
+       fitWallArt()   the pieces on the slatwall: framed pictures and blades, the wall of boots, the soft guards on hooks,
+                      the tall unit of stacked boot boxes and a stack of boxes on the floor (one <svg> each)
+       fitSceneSVG()  the bench, the skater and the kneeling shopkeeper lacing a new skate, viewBox 0 0 640 420
+     Their little animations (a swinging guard, a glinting blade, the lace tug, blinks, a heart) are CSS only. */
+
+  /* ---------- The fitting shop's slatwall: boots, boxes, blades and soft guards ---------- */
+
+  // Everything that hangs on (or stands against) the fitting shop's slatwall. The slatwall itself is CSS (.fit-slat in
+  // style.css); each piece is its own <svg>, so style.css can place it for any screen. Returns their markup:
+  //   defs    a sprite that takes no room: the boots, boot box, peg and guard shapes the other pieces reuse with <use>
+  //   frames  three little framed pictures (a skate, a snowflake, a heart) over a row of blades on pegs, viewBox 452 x 132
+  //   boots   the wall of figure skate boots: 4 rows of 7 on little clear shelves, a size strip under each, viewBox 452 x 384
+  //   hooks   two rows of animal and fruit soft guards on brass hooks and a row of pastel gloves, viewBox 452 x 156
+  //   boxes   a tall wooden shelf unit of boot boxes stacked two high, viewBox 240 x 660 (boxesShort: 4 shelves, 240 x 456)
+  //   stack   a chair and boxes stacked on the floor beside the fitting bench, viewBox 364 x 200
+  // Pass an optional suffix only if two walls share one page (keeps ids unique).
+  function fitWallArt(sfx) {
+    var S = sfx ? String(sfx) : "";
+    function id(n) { return "fw-" + n + S; }
+    function ref(n) { return "url(#" + id(n) + ")"; }
+    function n1(v) { return Math.round(v * 10) / 10; }
+    function g(tf, inner, cls) { return "<g" + (cls ? ' class="' + cls + '"' : "") + ' transform="' + tf + '">' + inner + "</g>"; }
+    function use(n, extra) { return '<use href="#' + id(n) + '"' + (extra || "") + "/>"; }
+
+    var WOOD = { frame: "#a8794a", top: "#c79a63", dark: "#8a6238", back: "#7c5636" };
+    var BRASS = { base: "#f2b83f", dark: "#c48a1e", hi: "#ffe39a" };
+
+    /* -- a figure skate blade, toe pick to the right (local 0..114 x 0..29) -- */
+    // heel stanchion, the open arch, a front stanchion with a window, the serrated toe pick, a rockered runner
+    var BLADE_D = "M6,3.5 H30 C28,10 25,14 24,19.6 Q40,21.4 56,21.2 C58,16 58,8 58,3.5 H106 L110.5,5 L107,8 L112,9.5 L108,12.5 L113,14 L109,17 L113.5,18.5 L108.5,22.5 Q104,26 96,26.4 Q55,29.6 8,25 Q1,24.4 2,21.4 Q3,19.4 8,19.8 C11,15 8,9 6,3.5 Z " +
+      "M68,8.5 H94 Q98.5,8.5 98.5,12.5 Q98.5,16.5 94,16.5 H68 Q63.5,16.5 63.5,12.5 Q63.5,8.5 68,8.5 Z";
+    var SILVER = { body: "#dfe6ef", shade: "#a9b5c6", plate: "#8a97a9", hi: "#ffffff" };
+    var GOLD = { body: "#f2b83f", shade: "#c48a1e", plate: "#a8781a", hi: "#ffe39a" };
+
+    function bladeParts(b, glint) {
+      var d = "", sc = [9, 18, 27, 62, 78, 94, 104];
+      for (var i = 0; i < sc.length; i++) d += "M" + (sc[i] - 1.1) + ",1.9a1.1,1.1 0 1,0 2.2,0a1.1,1.1 0 1,0 -2.2,0";
+      return '<path d="M4,0 H32 Q34,0 34,2 V3.8 H2 V2 Q2,0 4,0 Z M54,0 H108 Q110,0 110,2 V3.8 H52 V2 Q52,0 54,0 Z" fill="' + b.plate + '"/>' +
+        '<path d="' + d + '" fill="' + b.shade + '"/>' +
+        '<path d="' + BLADE_D + '" fill="' + b.body + '" fill-rule="evenodd"/>' +
+        // toe pick teeth a shade darker; the steel edge is a bright line above a darker rim
+        '<path d="M104,3.8 L110.5,5 L107,8 L112,9.5 L108,12.5 L113,14 L109,17 L113.5,18.5 L108.5,22.5 Q104,26 98,26.3 L100,14 Z" fill="' + b.shade + '" opacity=".6"/>' +
+        '<path d="M8,25 Q55,29.6 96,26.4" fill="none" stroke="' + b.shade + '" stroke-width="1.6"/>' +
+        '<path d="M9,22.6 Q55,27 97,23.8 M10,6 C12,10 12,14 11,17" fill="none" stroke="' + b.hi + '" stroke-width="1.3" stroke-linecap="round"/>' +
+        (glint ? '<g clip-path="' + ref("gclip") + '"><path class="fw-glint" d="M-10,-2 H-2 L-9,32 H-17 Z" fill="' + ref("glintg") + '"/></g>' : "");
+    }
+
+    /* -- soft guards (soakers): terry-cloth blade covers -- */
+    // hanging guard, hook at 0,0, toe end to the right; animals add a round head at that end
+    var SK_D = "M-60,14 H56 C66,14 72,24 72,35 C72,50 63,57 52,57 Q0,63 -56,55 C-66,53 -71,45 -71,35 C-71,23 -68,14 -60,14 Z";
+    var HEAD_D = "M27,35 a23,23 0 1,1 46,0 a23,23 0 1,1 -46,0 Z";
+    // a guard worn on a mounted blade (blade-local coordinates)
+    var SKB_D = "M7,11 H94 C101,11 105,3.5 111.5,3.5 C118,3.5 120.5,10 119.5,19 C118.5,28 110,31 100,31 Q55,35 9,30 Q-1,28 -1,20 Q-1,11 7,11 Z";
+
+    // the gathered elastic opening along the top of a guard
+    function band(col, x1, x2, y) {
+      var d = "";
+      for (var x = x1 + 3; x < x2 - 1; x += 5) d += "M" + x + "," + n1(y - 2.6) + "v5.2";
+      return '<path d="M' + x1 + "," + y + " H" + x2 + '" stroke="' + col + '" stroke-width="7"/>' +
+        '<path d="' + d + '" stroke="#000" stroke-opacity=".13" stroke-width="1.1"/>';
+    }
+    function loop(col) { return '<path d="M-5,17 C-6,3 6,3 5,17" fill="none" stroke="' + col + '" stroke-width="3.2"/>'; }
+    // body + shadow + clipped prints with the terry texture on top
+    function guard(col, head, behind, prints, front, loopCol) {
+      var shape = head ? "skph" : "skp";
+      return use(shape, ' x="3" y="4" fill="#000" opacity=".22"') + behind + loop(loopCol) + use(shape, ' fill="' + col + '"') +
+        '<g clip-path="' + ref(head ? "skh" : "skc") + '">' + prints + '<rect x="-80" y="0" width="160" height="70" fill="' + ref("terry") + '"/></g>' +
+        front + use("peg");
+    }
+    function eyes(y) {
+      return '<path d="M40.5,' + y + 'a2.5,3.1 0 1,0 5,0a2.5,3.1 0 1,0 -5,0M54.5,' + y + 'a2.5,3.1 0 1,0 5,0a2.5,3.1 0 1,0 -5,0" fill="#1d1420"/>' +
+        '<path d="M42.6,' + n1(y - 1.6) + 'a.9,.9 0 1,0 .1,0M56.6,' + n1(y - 1.6) + 'a.9,.9 0 1,0 .1,0" fill="#fff"/>';
+    }
+    function cheeks(y) { return '<path d="M32.8,' + y + 'a4.2,2.5 0 1,0 8.4,0a4.2,2.5 0 1,0 -8.4,0M58.8,' + y + 'a4.2,2.5 0 1,0 8.4,0a4.2,2.5 0 1,0 -8.4,0" fill="#ff7aa8" opacity=".5"/>'; }
+    function smile(y, col) { return '<path d="M50,' + y + ' q-2,2.8 -4.4,1.2 M50,' + y + ' q2,2.8 4.4,1.2" fill="none" stroke="' + (col || "#5a2430") + '" stroke-width="1.3" stroke-linecap="round"/>'; }
+    function whiskers(y, col) { return '<path d="M63,' + y + ' h9 M63,' + (y + 3) + ' l8,2.4 M37,' + y + ' h-9 M37,' + (y + 3) + ' l-8,2.4" stroke="' + col + '" stroke-width="1" stroke-linecap="round"/>'; }
+    var NECK = '<path d="M30,18 Q24,35 30,52" fill="none" stroke-width="2" stroke=';
+    // a tidy scatter of teardrop seeds (k scales each seed)
+    function seeds(x1, x2, y1, y2, sx, sy, k, col) {
+      var d = "", row = 0, a = n1(1.5 * k), b = n1(2.1 * k), c = n1(3.8 * k), e = n1(1.7 * k);
+      for (var y = y1; y <= y2; y += sy, row++) {
+        for (var x = x1 + (row % 2 ? sx / 2 : 0); x <= x2; x += sx) d += "M" + n1(x) + "," + n1(y) + "q" + a + "," + b + " 0," + c + "q-" + a + ",-" + e + " 0,-" + c + "z";
+      }
+      return '<path d="' + d + '" fill="' + col + '"/>';
+    }
+    function leaf(cx, cy, rot, len) {
+      return g("translate(" + cx + "," + cy + ") rotate(" + rot + ")", '<path d="M0,0 Q' + n1(len / 2) + ",-" + n1(len / 3) + " " + len + ",0 Q" + n1(len / 2) + "," + n1(len / 3) + ' 0,0 Z" fill="#2f9a6a"/><path d="M1,0 H' + (len - 2) + '" stroke="#5fc48e" stroke-width="1"/>');
+    }
+    // round citrus slices printed on the fabric
+    function slices(pts, r, rind, flesh) {
+      var dr = "", df = "", dl = "";
+      pts.forEach(function (p) {
+        var cx = p[0], cy = p[1];
+        dr += "M" + (cx - r) + "," + cy + "a" + r + "," + r + " 0 1,0 " + 2 * r + ",0a" + r + "," + r + " 0 1,0 -" + 2 * r + ",0";
+        df += "M" + n1(cx - r + 1.8) + "," + cy + "a" + n1(r - 1.8) + "," + n1(r - 1.8) + " 0 1,0 " + n1(2 * r - 3.6) + ",0a" + n1(r - 1.8) + "," + n1(r - 1.8) + " 0 1,0 -" + n1(2 * r - 3.6) + ",0";
+        for (var k = 0; k < 3; k++) {
+          var a = k * Math.PI / 3, dx = Math.cos(a) * (r - 2.4), dy = Math.sin(a) * (r - 2.4);
+          dl += "M" + n1(cx - dx) + "," + n1(cy - dy) + "L" + n1(cx + dx) + "," + n1(cy + dy);
+        }
+      });
+      return '<path d="' + dr + '" fill="' + rind + '"/><path d="' + df + '" fill="' + flesh + '"/><path d="' + dl + '" stroke="' + rind + '" stroke-width="1.2"/>';
+    }
+
+    // each design returns its parts in hook-local coordinates: guard(colour, head?, behind, prints, front, loop colour)
+    var GUARDS = {
+      bunny: function () {
+        var c = "#ffe6ef", pink = "#ff9fc0";
+        return guard(c, true,
+          '<circle cx="-70" cy="37" r="9" fill="#fff8f3"/>' +
+          '<path d="M34.7,1.6 a6.5,17 -14 1,0 12.6,-3.1 a6.5,17 -14 1,0 -12.6,3.1 Z M52.6,-2.4 a6.5,17 12 1,0 12.7,2.7 a6.5,17 12 1,0 -12.7,-2.7 Z" fill="' + c + '"/>' +
+          '<path d="M37.9,2.8 a3.2,12 -14 1,0 6.2,-1.6 a3.2,12 -14 1,0 -6.2,1.6 Z M55.9,.3 a3.2,12 12 1,0 6.3,1.3 a3.2,12 12 1,0 -6.3,-1.3 Z" fill="' + pink + '"/>',
+          NECK + '"#f4c3d6"/>' + band("#f7cddd", -64, 28, 17.5),
+          eyes(33) + '<path d="M47.6,37.6 h4.8 l-2.4,2.8 z" fill="#e0457a"/>' + smile(40.4) + cheeks(40) + whiskers(38, "#d9a6ba"),
+          "#f4c3d6");
+      },
+      cat: function () {
+        var c = "#c4b0ea", sh = "#a48bd8";
+        return guard(c, true,
+          '<path d="M-68,44 C-86,46 -90,26 -80,16" fill="none" stroke="' + c + '" stroke-width="7" stroke-linecap="round"/>' +
+          '<path d="M-84.2,23 C-84.6,19.6 -83,17 -80,16" fill="none" stroke="' + sh + '" stroke-width="7" stroke-linecap="round"/>' +
+          '<path d="M31,24 L34,3 L49,15 Z M51,15 L66,3 L69,24 Z" fill="' + c + '"/><path d="M35.5,17 L36.6,8 L44,14.6 Z M56,14.6 L63.4,8 L64.5,17 Z" fill="#ff9fc0"/>',
+          '<path d="M-44,19 q5,10 0,19 M-26,19 q5,10 0,19 M-8,19 q5,10 0,19 M10,19 q5,10 0,19 M46,12 v7 M54,12 v7" fill="none" stroke="' + sh + '" stroke-width="4" stroke-linecap="round"/>' +
+            NECK + '"' + sh + '"/>' + band("#b39ce2", -64, 28, 17.5),
+          eyes(34) + '<path d="M47.8,38.6 h4.4 l-2.2,2.6 z" fill="#ff7aa8"/>' + smile(41.2, "#4a3a6a") + cheeks(41) + whiskers(39, "#5b4a7a"),
+          sh);
+      },
+      panda: function () {
+        var c = "#fbf7f2", k = "#2a2230";
+        return guard(c, true,
+          '<path d="M-75.5,37 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0 M25,16 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 M59,16 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0" fill="' + k + '"/>',
+          '<ellipse cx="-14" cy="60" rx="48" ry="8" fill="#e9e2da"/>' +
+            '<path d="M7,56 a11,9 0 1,0 22,0 a11,9 0 1,0 -22,0 M-59,55 a11,8 0 1,0 22,0 a11,8 0 1,0 -22,0" fill="' + k + '"/>' +
+            NECK + '"#e4ddd5"/>' + band("#ece5de", -64, 26, 17.5),
+          '<ellipse cx="42" cy="34" rx="6" ry="7.6" transform="rotate(-28 42 34)" fill="' + k + '"/><ellipse cx="58" cy="34" rx="6" ry="7.6" transform="rotate(28 58 34)" fill="' + k + '"/>' +
+            '<path d="M41,33 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0 M55,33 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" fill="#fff"/>' +
+            '<ellipse cx="50" cy="40" rx="3.2" ry="2.2" fill="' + k + '"/>' + smile(42) + cheeks(42),
+          "#d9d2cc");
+      },
+      penguin: function () {
+        var c = "#2c3a72", sh = "#1d2550";
+        return guard(c, true,
+          '<path d="M-69,46 L-82,52 L-67,55 Z" fill="' + sh + '"/>',
+          '<ellipse cx="-8" cy="58" rx="60" ry="13" fill="#fff8f3"/>' +
+            '<path d="M6,22 C-1,32 1,46 12,51 C10,40 11,31 6,22 Z" fill="' + sh + '"/>' + band(sh, -64, 26, 17.5),
+          '<path d="M50,30 C46,23 33,25 34,37 C35,48 44,52 50,52 C56,52 65,48 66,37 C67,25 54,23 50,30 Z" fill="#fff8f3"/>' +
+            eyes(36) + '<path d="M46.5,40 h7 l-3.5,5 z" fill="' + BRASS.base + '"/>' + cheeks(43) +
+            '<path d="M36.5,58.5 a5.5,2.8 0 1,0 11,0 a5.5,2.8 0 1,0 -11,0 M52.5,58.5 a5.5,2.8 0 1,0 11,0 a5.5,2.8 0 1,0 -11,0" fill="' + BRASS.base + '"/>',
+          sh);
+      },
+      fox: function () {
+        var c = "#ee7a3a", sh = "#c95f26", w = "#fff1e0", dk = "#5a2430";
+        return guard(c, true,
+          '<ellipse cx="-72" cy="22" rx="10" ry="19" transform="rotate(-28 -72 22)" fill="' + c + '"/><circle cx="-79.5" cy="8" r="6.4" fill="' + w + '"/>' +
+          '<path d="M30,24 L32,-2 L49,14 Z M51,14 L68,-2 L70,24 Z" fill="' + c + '"/>' +
+          '<path d="M31.4,6 L32,-2 L38.6,4.4 Z M61.4,4.4 L68,-2 L68.6,6 Z" fill="' + dk + '"/><path d="M35,17 L36,7 L43.4,14 Z M56.6,14 L64,7 L65,17 Z" fill="' + w + '"/>',
+          '<ellipse cx="-6" cy="58" rx="58" ry="10" fill="' + w + '"/>' + NECK + '"' + sh + '"/>' + band(sh, -64, 26, 17.5),
+          '<path d="M27,38 C33,46 42,49 50,44 C58,49 67,46 73,38 C73,52 63,58 50,58 C37,58 27,52 27,38 Z" fill="' + w + '"/>' +
+            eyes(33) + '<ellipse cx="50" cy="44.5" rx="3" ry="2.1" fill="#1d1420"/>' + cheeks(40),
+          sh);
+      },
+      strawberry: function () {
+        var lv = "";
+        for (var k = 0; k < 5; k++) {
+          var a = (-64 + k * 32) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+          lv += "M-68,35 Q" + n1(-68 + ca * 9 - sa * 5) + "," + n1(35 + sa * 9 + ca * 5) + " " + n1(-68 + ca * 19) + "," + n1(35 + sa * 19) +
+            " Q" + n1(-68 + ca * 9 + sa * 5) + "," + n1(35 + sa * 9 - ca * 5) + " -68,35 Z";
+        }
+        return guard("#e8455a", false, "",
+          seeds(-48, 66, 25, 54, 11, 8.5, 1, "#ffd36b") + '<ellipse cx="6" cy="24" rx="34" ry="3.4" fill="#fff" opacity=".28"/>' + band("#c42f46", -64, 60, 17.5),
+          '<path d="M-70,35 L-83,30" stroke="#2f9a6a" stroke-width="3.4" stroke-linecap="round"/>' +
+            '<path d="' + lv + '" fill="#2f9a6a"/><circle cx="-68" cy="35" r="3.4" fill="#5fc48e"/>',
+          "#c42f46");
+      },
+      watermelon: function () {
+        // dark rind, a pale band, then pink flesh: the same outline with its bottom lifted
+        return guard("#2f9a6a", false, "",
+          '<path d="M-72,10 H74 V36 C72,48 63,54 52,54 Q0,60 -56,52 C-66,50 -72,44 -72,36 Z" fill="#b8e68a"/>' +
+            '<path d="M-72,10 H74 V34 C72,45 63,50 52,50 Q0,56 -56,48 C-66,46 -72,41 -72,34 Z" fill="#ff6584"/>' +
+            seeds(-50, 62, 24, 41, 14, 8.5, 1.5, "#2a1b30") + band("#e8506f", -64, 60, 17.5),
+          "", "#d94a68");
+      },
+      lemon: function () {
+        var c = "#ffd84d";
+        return guard(c, false, '<ellipse cx="73" cy="35" rx="6" ry="5" fill="' + c + '"/>',
+          slices([[-36, 38], [2, 39], [40, 37]], 10, "#fff6c4", "#ffe066") +
+            '<path d="M-18,28 h.1 M20,49 h.1 M-52,48 h.1 M58,24 h.1 M-6,53 h.1 M60,50 h.1" stroke="#fff6c4" stroke-width="3" stroke-linecap="round"/>' + band("#e8b92a", -64, 60, 17.5),
+          '<path d="M-70,29 L-76,21" stroke="#8a6238" stroke-width="2.6" stroke-linecap="round"/>' + leaf(-75.5, 21.5, -84, 16),
+          "#e8b92a");
+      },
+      kiwi: function () {
+        return guard("#8a6238", false, "",
+          // a brown fuzzy rim, bright green flesh, a pale core and a ring of black seeds
+          '<path d="M-60,17.5 H56 C64,17.5 69,26 69,35 C69,48 61,54 52,54 Q0,59.5 -56,52 C-64,50.5 -68,44 -68,35 C-68,25 -66,17.5 -60,17.5 Z" fill="#8fcf4f"/>' +
+            '<path d="M-60,21 L-50,30 M-30,21 L-24,29 M0,20 V28 M30,21 L24,29 M58,24 L48,31 M-58,51 L-48,45 M0,55 V47 M54,51 L46,45" stroke="#b5e283" stroke-width="1.6" stroke-linecap="round"/>' +
+            '<ellipse cx="0" cy="37" rx="52" ry="5.5" fill="#f4f0c8"/>' +
+            seeds(-44, 46, 26.4, 26.4, 10, 9, 1.3, "#1d1420") + seeds(-39, 51, 43.4, 43.4, 10, 9, 1.3, "#1d1420") +
+            band("#7a5532", -64, 60, 17.5),
+          "", "#6b4a2a");
+      },
+      cherry: function () {
+        var stems = "", fruit = "", hi = "", leaves = "";
+        [[-44, 30], [-2, 34], [40, 30]].forEach(function (p) {
+          var x = p[0], y = p[1];
+          stems += "M" + (x - 5) + "," + (y + 12) + " Q" + (x - 3) + "," + (y + 2) + " " + (x + 3) + "," + (y - 4) + " Q" + (x + 4) + "," + (y + 5) + " " + (x + 7) + "," + (y + 11);
+          fruit += "M" + (x - 10.2) + "," + (y + 15) + "a5.2,5.2 0 1,0 10.4,0a5.2,5.2 0 1,0 -10.4,0M" + (x + 1.8) + "," + (y + 14) + "a5.2,5.2 0 1,0 10.4,0a5.2,5.2 0 1,0 -10.4,0";
+          hi += "M" + (x - 7) + "," + (y + 13) + "h.1M" + (x + 5) + "," + (y + 12) + "h.1";
+          leaves += leaf(x + 3, y - 4, -20, 10);
+        });
+        return guard("#ffc4d6", false, "",
+          '<path d="' + stems + '" fill="none" stroke="#2f9a6a" stroke-width="1.6" stroke-linecap="round"/><path d="' + fruit + '" fill="#d6284e"/>' + leaves +
+            '<path d="' + hi + '" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>' + band("#f7a8c2", -64, 60, 17.5),
+          "", "#f29ab6");
+      }
+    };
+
+    // guards worn on a mounted blade (blade-local coordinates)
+    function bladeGuard(kind) {
+      var s = '<path d="' + SKB_D + '" transform="translate(2,3)" fill="#000" opacity=".2"/>';
+      if (kind === "strawberry") {
+        s += '<path d="' + SKB_D + '" fill="#e8455a"/><g clip-path="' + ref("skb") + '">' +
+          seeds(4, 100, 19, 30, 10, 7.5, 0.9, "#ffd36b") + band("#c42f46", -2, 92, 14) +
+          '<rect x="-4" y="6" width="128" height="34" fill="' + ref("terry") + '"/></g>' + leaf(112, 6, -60, 10) + leaf(114, 7, -10, 10);
+      } else if (kind === "panda") {
+        s += '<path d="M101.6,3 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" fill="#2a2230"/>' +
+          '<path d="' + SKB_D + '" fill="#fbf7f2"/><g clip-path="' + ref("skb") + '">' + band("#ece5de", -2, 92, 14) +
+          '<rect x="-4" y="6" width="128" height="34" fill="' + ref("terry") + '"/></g>' +
+          '<ellipse cx="104" cy="19" rx="4" ry="5.2" transform="rotate(-25 104 19)" fill="#2a2230"/><ellipse cx="115" cy="19" rx="4" ry="5.2" transform="rotate(25 115 19)" fill="#2a2230"/>' +
+          '<path d="M103,18.4 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 M113,18.4 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0" fill="#fff"/>' +
+          '<ellipse cx="109.5" cy="25" rx="2.4" ry="1.7" fill="#2a2230"/>';
+      } else if (kind === "orange") {
+        s += '<path d="' + SKB_D + '" fill="#ff9a3c"/><g clip-path="' + ref("skb") + '">' +
+          slices([[22, 25], [48, 27], [74, 27], [98, 25]], 7, "#fff1e0", "#ffc27a") + band("#e97f22", -2, 92, 14) +
+          '<rect x="-4" y="6" width="128" height="34" fill="' + ref("terry") + '"/></g>' + leaf(113, 5, -50, 11);
+      } else {
+        // frog: green with eye bumps at the toe end
+        s += '<path d="M96.6,6 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 M107.6,5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" fill="#5cc27e"/>' +
+          '<path d="' + SKB_D + '" fill="#5cc27e"/><g clip-path="' + ref("skb") + '">' +
+          '<ellipse cx="50" cy="37" rx="56" ry="6" fill="#a6e3b0"/><path d="M20.6,22 a3.4,3.4 0 1,0 6.8,0 a3.4,3.4 0 1,0 -6.8,0 M41.6,26 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0 M61,21 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" fill="#2f9a6a"/>' +
+          band("#3fa866", -2, 88, 14) + '<rect x="-4" y="6" width="128" height="34" fill="' + ref("terry") + '"/></g>' +
+          '<path d="M99,6 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0 M110,5 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0" fill="#fff"/>' +
+          '<path d="M101,6.4 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0 M112,5.4 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0" fill="#1d1420"/>' +
+          '<path d="M99,19 Q107,25 116,17" fill="none" stroke="#1d6b45" stroke-width="1.5" stroke-linecap="round"/>';
+      }
+      return s;
+    }
+
+    /* -- a figure skate boot, toe to the right (local 0..124 x 0..146; a blade adds 29 below) -- */
+    // high leather boot leaning slightly forward, padded collar, tongue, laces, speed hooks, stacked heel
+    var BOOT_D = "M22,8 C20,40 24,62 18,88 C13,106 8,118 12,130 L44,130 C50,130 52,140 60,140 L112,140 C124,140 126,118 110,110 C94,104 80,96 72,76 C67,60 68,32 72,12 C58,5 36,4 22,8 Z";
+    var BOOTS = {
+      white: { body: "#fff8f3", shade: "#eadfd2", deep: "#c9b8a5", strip: "#e2d4c4", lace: "#ffffff", sole: "#8a6238", heel: "#a8794a" },
+      cream: { body: "#fbe9d0", shade: "#ecd3b1", deep: "#c9a87e", strip: "#e6cba6", lace: "#fff8f3", sole: "#8a6238", heel: "#a8794a" },
+      tan: { body: "#dcae7e", shade: "#c79560", deep: "#8f6238", strip: "#c08a55", lace: "#fbe9d0", sole: "#5c3e24", heel: "#6b4a2a" },
+      black: { body: "#2e2636", shade: "#221b29", deep: "#6b5f78", strip: "#463c50", lace: "#fff8f3", sole: "#1d1420", heel: "#2a2230" },
+      lilac: { body: "#dccbf3", shade: "#c8b3ea", deep: "#8f6bd6", strip: "#cbb6ec", lace: "#ffffff", sole: "#6b4aa8", heel: "#8f6bd6" },
+      pink: { body: "#ffd6e5", shade: "#f6bcd1", deep: "#e0457a", strip: "#f7c3d6", lace: "#ffffff", sole: "#b8433f", heel: "#e07a9b" }
+    };
+    function boot(c, o) {
+      var s = "", x = "", lace = [[103, 112.5], [95, 108], [87, 102.5], [80, 96], [74.5, 88.5], [70.5, 80.5], [68, 71.5]];
+      // its soft shadow on the slats behind
+      s += '<g fill="#3a2a20" opacity=".2"><path d="' + BOOT_D + '" transform="translate(6,4)"/>' + (o.blade ? '<path d="' + BLADE_D + '" transform="translate(14,150)" fill-rule="evenodd"/>' : "") + "</g>";
+      if (o.blade) s += g("translate(8,146)", bladeParts(o.blade, false) + (o.guard ? bladeGuard(o.guard) : ""));
+      for (var i = 0; i < lace.length; i++) x += "M" + n1(lace[i][0] - 2.8) + "," + n1(lace[i][1] - 2.8) + "l5.6,5.6m0,-5.6l-5.6,5.6";
+      s += '<path d="' + BOOT_D + '" fill="' + c.body + '"/>' +
+        '<path d="M18,88 C13,106 8,118 12,130 H42 C38,113 32,98 18,88 Z M96,140 C93,126 99,115 110,110 C126,118 124,140 112,140 Z" fill="' + c.shade + '"/>' +
+        '<path d="M24,11 C36,7 56,7 70,13" fill="none" stroke="' + c.shade + '" stroke-width="6" stroke-linecap="round"/>' +
+        '<path d="M29,24 C29,44 30,62 26,80" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>' +
+        '<path d="M19,84 C32,92 40,111 44,128 M93,139 C90,125 97,113 108,108" fill="none" stroke="' + c.deep + '" stroke-width="1.2" stroke-dasharray="2.5 2"/>' +
+        '<path d="M106,114.5 C92,108 80,99.5 68,80 C63,62 64,34 67,13" fill="none" stroke="' + c.strip + '" stroke-width="9" stroke-linecap="round"/>' +
+        '<path d="M62.5,24 C61,12 62,2 69,0 C76,-2 79,4 76.5,13 C75,19 73,23 71.5,26 Z" fill="' + c.strip + '"/>' +
+        '<path d="M66,4 C69,1.5 73,1.5 75,4" fill="none" stroke="#fff" stroke-opacity=".45" stroke-width="2" stroke-linecap="round"/>' +
+        '<path d="' + x + 'M68,67 L67,61 L71,55 L67,50 L71,44 L67,39 L71,33 L67,28 L70,20" fill="none" stroke="' + c.lace + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '<path d="M67,61 q5,0 6.5,-3.4 M67,50 q5,0 6.5,-3.4 M67,39 q5,0 6.5,-3.4 M67,28 q5,0 6.5,-3.4" fill="none" stroke="' + BRASS.dark + '" stroke-width="2.4" stroke-linecap="round"/>' +
+        '<path d="M70,18 C62,10 60,21 70,18 C79,12 81,23 70,18 M70,18 L66,27 M70,18 L75,28" fill="none" stroke="' + c.lace + '" stroke-width="1.8" stroke-linecap="round"/>' +
+        '<path d="M12,128 H44 L42,146 H17 Q12,146 12,141 Z" fill="' + c.heel + '"/>' +
+        '<path d="M56,138 H113 Q123,138 122,143 Q121,146 116,146 H60 Q56,146 56,142 Z" fill="' + c.sole + '"/>';
+      return s;
+    }
+
+    /* -- the sprite: shapes the pieces below reuse with <use> -- */
+    // one <g> per kind of boot on the wall: [colours, options]; kindH() says how far below its top its lowest point is
+    var KINDS = {
+      w: [BOOTS.white, {}], wb: [BOOTS.white, { blade: SILVER }], wg: [BOOTS.white, { blade: GOLD }],
+      c: [BOOTS.cream, {}], cb: [BOOTS.cream, { blade: SILVER }], tb: [BOOTS.tan, { blade: SILVER }],
+      kb: [BOOTS.black, { blade: SILVER }], l: [BOOTS.lilac, { blade: SILVER }], p: [BOOTS.pink, {}],
+      wf: [BOOTS.white, { blade: SILVER, guard: "frog" }], wo: [BOOTS.white, { blade: SILVER, guard: "orange" }],
+      cs: [BOOTS.cream, { blade: SILVER, guard: "strawberry" }], kp: [BOOTS.black, { blade: SILVER, guard: "panda" }]
+    };
+    function kindH(k) { var o = KINDS[k][1]; return o.guard ? 182 : o.blade ? 176 : 146; }
+    var bootDefs = "";
+    for (var kk in KINDS) if (KINDS.hasOwnProperty(kk)) bootDefs += '<g id="' + id("b-" + kk) + '">' + boot(KINDS[kk][0], KINDS[kk][1]) + "</g>";
+
+    // a boot box seen end on (0..70 x 0..44): the box takes the <use>'s fill, its lid the <use>'s color,
+    // and its end label a little skate (the size is written over it by box())
+    var SKATE_ICON = "M17,22.5 H22.6 V27.4 L28,29.6 Q30.6,30.8 30.6,33.4 H17 Z M16.4,34.6 H31 V36 H16.4 Z";
+    var defs = '<svg class="fit-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>' +
+      '<pattern id="' + id("terry") + '" width="4.5" height="4.5" patternUnits="userSpaceOnUse"><circle cx="1.1" cy="1.1" r=".8" fill="#fff" fill-opacity=".2"/><circle cx="3.4" cy="3.4" r=".8" fill="#000" fill-opacity=".06"/></pattern>' +
+      '<path id="' + id("skp") + '" d="' + SK_D + '"/>' +
+      '<path id="' + id("skph") + '" d="' + SK_D + " " + HEAD_D + '"/>' +
+      '<clipPath id="' + id("skc") + '"><path d="' + SK_D + '"/></clipPath>' +
+      '<clipPath id="' + id("skh") + '"><path d="' + SK_D + " " + HEAD_D + '"/></clipPath>' +
+      '<clipPath id="' + id("skb") + '"><path d="' + SKB_D + '"/></clipPath>' +
+      '<clipPath id="' + id("gclip") + '"><path d="' + BLADE_D + '" clip-rule="evenodd"/></clipPath>' +
+      '<g id="' + id("peg") + '"><circle cx="0" cy="6" r="4.4" fill="' + BRASS.dark + '"/><circle cx="-.6" cy="5.2" r="3.2" fill="' + BRASS.base + '"/><circle cx="-1.4" cy="4.4" r="1.1" fill="' + BRASS.hi + '"/></g>' +
+      '<linearGradient id="' + id("bdim") + '" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000" stop-opacity=".25"/><stop offset=".2" stop-color="#000" stop-opacity="0"/><stop offset=".8" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".25"/></linearGradient>' +
+      '<linearGradient id="' + id("glintg") + '" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".95"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>' +
+      '<g id="' + id("box") + '"><rect x="1" y="8" width="68" height="36" rx="2"/>' +
+        '<rect x="61" y="13" width="8" height="31" fill="#000" opacity=".12"/><rect x="1" y="13" width="68" height="2.6" fill="#000" opacity=".2"/>' +
+        '<rect width="70" height="13" rx="2.5" fill="currentColor"/><rect x="2" y="1.4" width="66" height="2" rx="1" fill="#fff" opacity=".28"/>' +
+        '<rect x="11" y="19.5" width="45" height="18" rx="2" fill="#fff8f3"/><path d="' + SKATE_ICON + '" fill="#24305e"/></g>' +
+      // a knitted glove hanging fingers down (it takes the <use>'s fill), ribbed cuff on top
+      '<g id="' + id("glove") + '"><rect x="-8" y="10" width="16" height="11" rx="2"/><rect x="-9" y="19" width="18" height="16" rx="5"/>' +
+        '<rect x="-9" y="29" width="4.3" height="13" rx="2.1"/><rect x="-4.5" y="29" width="4.3" height="16.5" rx="2.1"/><rect x="0" y="29" width="4.3" height="15.5" rx="2.1"/><rect x="4.5" y="29" width="4.3" height="12" rx="2.1"/>' +
+        '<rect x="-15" y="21" width="4.6" height="12" rx="2.3" transform="rotate(28 -12.7 22)"/>' +
+        '<path d="M-5,11 V20 M-2,11 V20 M1,11 V20 M4,11 V20" stroke="#000" stroke-opacity=".14" stroke-width="1"/></g>' +
+      bootDefs +
+      "</defs></svg>";
+
+    // a box at x, y: [box colour, lid colour] and the size on its label
+    var BOX = { navy: ["#2f3d75", "#24305e"], pink: ["#ff8fc8", "#e0457a"], cream: ["#f3dcbc", "#fbe9d0"], lilac: ["#b9a2ea", "#8f6bd6"], red: ["#d0605a", "#b8433f"] };
+    function box(x, y, col, size) {
+      return '<use href="#' + id("box") + '" x="' + x + '" y="' + y + '" fill="' + BOX[col][0] + '" color="' + BOX[col][1] + '"/>' +
+        '<text x="' + (x + 43.5) + '" y="' + (y + 32.4) + '" text-anchor="middle">' + size + "</text>";
+    }
+    var SIZES = ["4", "4&#189;", "5", "5&#189;", "6", "6&#189;", "7", "7&#189;", "8"];
+    var TXT = ' font-family="Nunito, sans-serif" font-weight="800" fill="#5a2430"';
+    function svgOpen(cls, w, h) { return '<svg class="' + cls + '" viewBox="0 0 ' + w + " " + h + '" aria-hidden="true" focusable="false">'; }
+
+    /* -- the wall of boots: 4 rows of 7 on little clear shelves, a size strip under each -- */
+    var GRID = [
+      ["wb", "w", "wb", "c", "wb", "kb", "w"],
+      ["w", "wf", "wb", "l", "wb", "w", "cb"],
+      ["c", "wb", "wo", "w", "tb", "wb", "p"],
+      ["wb", "kp", "w", "cs", "wb", "w", "wg"]
+    ];
+    var STRIPE = ["#e0457a", "#7be3ff", "#f2b83f", "#8f6bd6"];
+    var CW = 62, RH = 94, BK = 0.43, gBoots = "", shelves = "", tags = "", stripes = "", sizes = "";
+    GRID.forEach(function (row, r) {
+      var sy = 82 + r * RH, st = "";
+      row.forEach(function (k, i) {
+        var x = 9 + i * CW;
+        gBoots += '<use href="#' + id("b-" + k) + '" transform="translate(' + (x + 4) + "," + n1(sy - kindH(k) * BK) + ") scale(" + BK + ')"/>';
+        shelves += "M" + (x + 1) + "," + sy + "h60v4h-60z";
+        tags += "M" + (x + 4) + "," + (sy + 6) + "h54v10.5h-54z";
+        st += "M" + (x + 4) + "," + (sy + 6) + "h7v10.5h-7z";
+        sizes += '<text x="' + (x + 35) + '" y="' + (sy + 14.3) + '">' + SIZES[i + (r % 2)] + "</text>";
+      });
+      stripes += '<path d="' + st + '" fill="' + STRIPE[r] + '"/>';
+    });
+    var boots = svgOpen("fw-boots", 452, 384) +
+      // each shelf: a clear ledge with a bright front edge and a soft shadow on the slats under it
+      '<path d="' + shelves + '" transform="translate(2,4)" fill="#3a2a20" opacity=".16"/>' + gBoots +
+      '<path d="' + shelves + '" fill="#f4fbff" fill-opacity=".62"/>' +
+      '<path d="' + shelves.replace(/v4h-60z/g, "v1.2h-60z") + '" fill="#fff"/>' +
+      '<path d="' + tags + '" fill="#fff8f3"/>' + stripes +
+      '<g font-size="7.6" text-anchor="middle"' + TXT + ">" + sizes + "</g></svg>";
+
+    /* -- above the boots: three little framed pictures and a row of blades on brass pegs -- */
+    function frame(x, y, w, h, mat, art) {
+      return '<path d="M' + (x + w / 2) + "," + (y - 16) + " L" + (x + 8) + "," + y + " M" + (x + w / 2) + "," + (y - 16) + " L" + (x + w - 8) + "," + y + '" stroke="#5c3e24" stroke-width="1.4" fill="none"/>' +
+        '<circle cx="' + (x + w / 2) + '" cy="' + (y - 17) + '" r="3" fill="' + BRASS.dark + '"/>' +
+        '<rect x="' + (x + 4) + '" y="' + (y + 5) + '" width="' + w + '" height="' + h + '" rx="3" fill="#3a2a20" opacity=".2"/>' +
+        '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="3" fill="' + WOOD.frame + '"/>' +
+        '<rect x="' + (x + 2) + '" y="' + (y + 2) + '" width="' + (w - 4) + '" height="3" rx="1.5" fill="' + WOOD.top + '"/>' +
+        '<rect x="' + (x + 7) + '" y="' + (y + 7) + '" width="' + (w - 14) + '" height="' + (h - 14) + '" fill="' + mat + '"/>' +
+        g("translate(" + (x + w / 2) + "," + (y + h / 2) + ")", art);
+    }
+    var flake = "";
+    for (var fa = 0; fa < 6; fa++) flake += '<path d="M0,0 V-19 M0,-12 L-5,-16 M0,-12 L5,-16" transform="rotate(' + fa * 60 + ')"/>';
+    var frames = svgOpen("fw-frames", 452, 132) +
+      frame(46, 26, 92, 70, "#ffd9e6", '<use href="#' + id("b-wb") + '" transform="translate(-20,-28) scale(.31)"/>') +
+      frame(186, 20, 80, 80, "#24305e", '<g stroke="#fff8f3" stroke-width="3" stroke-linecap="round" fill="none">' + flake + "</g>" + '<circle r="3.4" fill="#7be3ff"/>') +
+      frame(314, 30, 92, 62, "#fbe9d0", '<path d="M0,15 C-24,0 -22,-19 -10,-19 C-5,-19 0,-15 0,-9 C0,-15 5,-19 10,-19 C22,-19 24,0 0,15 Z" fill="#e0457a"/><path d="M-12,-11 q-4,3 -3,9" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none" opacity=".7"/>');
+    // blades hung by the arch, the middle one gold with a glint running along it
+    var BX = [58, 142, 226, 310, 394], bladeK = 0.6;
+    BX.forEach(function (cx, i) {
+      var x0 = n1(cx - 57 * bladeK), top = 108;
+      frames += '<path d="' + BLADE_D + '" fill-rule="evenodd" fill="#3a2a20" opacity=".16" transform="translate(' + n1(x0 + 2.5) + "," + (top + 3) + ") scale(" + bladeK + ')"/>' +
+        g("translate(" + x0 + "," + top + ") scale(" + bladeK + ")", bladeParts(i === 2 ? GOLD : SILVER, i === 2)) +
+        '<use href="#' + id("peg") + '" transform="translate(' + n1(x0 + 41 * bladeK) + "," + n1(top + 3.6 * bladeK - 4) + ') scale(.8)"/>';
+    });
+    frames += "</svg>";
+
+    /* -- below the boots: two rows of animal and fruit soft guards on brass hooks, then pastel gloves -- */
+    // fruit in the columns the skater's head can land on, so no dark guard or animal face sits by her head
+    var GROWS = [["bunny", "fox", "panda", "strawberry", "lemon"], ["cat", "penguin", "kiwi", "cherry", "watermelon"]], gk = 0.55, hooks = "";
+    GROWS.forEach(function (row, r) {
+      row.forEach(function (kind, i) {
+        var inner = GUARDS[kind]();
+        hooks += g("translate(" + (48 + i * 84 + (r ? 20 : 0)) + "," + (2 + r * 50) + ") scale(" + gk + ")", kind === "strawberry" ? '<g class="fw-swing">' + inner + "</g>" : inner);
+      });
+    });
+    // knitted gloves in pairs, each pair clipped to a little card on a hook
+    var GLOVES = [["#c4b0ea", "#a48bd8"], ["#ffb3cf", "#f08fb4"], ["#a8dcf0", "#7fc4e0"], ["#fbe9d0", "#e3c8a2"], ["#a6e3b0", "#7ccb8e"], ["#8f6bd6", "#6b4aa8"], ["#ffb3cf", "#f08fb4"], ["#c4b0ea", "#a48bd8"], ["#a8dcf0", "#7fc4e0"]];
+    GLOVES.forEach(function (c, i) {
+      hooks += g("translate(" + (30 + i * 49) + ",106)", '<use href="#' + id("glove") + '" x="-4" y="3" fill="' + c[1] + '"/><use href="#' + id("glove") + '" x="3" fill="' + c[0] + '"/>' +
+        '<rect x="-10" y="1" width="20" height="10" rx="2" fill="#fff8f3"/><circle cx="0" cy="4.4" r="1.5" fill="#5a2430"/><path d="M-6,8 H6" stroke="' + c[1] + '" stroke-width="1.6"/>');
+    });
+    hooks = svgOpen("fw-hooks", 452, 156) + hooks + "</svg>";
+
+    /* -- the boot boxes: a wooden shelf unit, its shelves full of boxes stacked two high, three across -- */
+    // n shelves: 6 for the tall unit of wide screens (viewBox 240 x 660), 4 for tall screens (240 x 456)
+    var BAYS = [["navy", "navy"], ["pink", "cream"], ["lilac", "lilac"], ["red", "navy"], ["cream", "cream"], ["pink", "lilac"]];
+    function boxUnit(n, cls) {
+      var H = 48 + n * 102, bx = "", boards = "";
+      for (var b = 0; b < n; b++) {
+        var top = 18 + b * 102, bay = BAYS[b];
+        for (var tier = 0; tier < 2; tier++) {
+          for (var c = 0; c < 3; c++) bx += box(14 + c * 72, top + 6 + tier * 45, bay[tier], SIZES[(b * 2 + tier * 3 + c * 2) % SIZES.length]);
+        }
+        boards += '<rect x="0" y="' + (top + 96) + '" width="240" height="9" fill="' + WOOD.frame + '"/><rect x="0" y="' + (top + 96) + '" width="240" height="2.6" fill="' + WOOD.top + '"/>' +
+          '<rect x="10" y="' + (top + 105) + '" width="220" height="5" fill="#000" opacity=".2"/>';
+      }
+      return svgOpen(cls, 240, H) +
+        '<rect x="0" y="12" width="240" height="' + (H - 24) + '" fill="' + WOOD.back + '"/>' +
+        '<rect x="0" y="12" width="240" height="' + (H - 24) + '" fill="url(#' + id("bdim") + ')"/>' +
+        '<g font-size="9"' + TXT + ">" + bx + "</g>" + boards +
+        // the frame: two posts, a crown on top and a plinth on the floor
+        '<rect x="0" y="0" width="11" height="' + H + '" fill="' + WOOD.frame + '"/><rect x="229" y="0" width="11" height="' + H + '" fill="' + WOOD.frame + '"/>' +
+        '<rect x="2.5" y="0" width="3" height="' + H + '" fill="' + WOOD.top + '" opacity=".8"/><rect x="231.5" y="0" width="3" height="' + H + '" fill="' + WOOD.top + '" opacity=".8"/>' +
+        '<rect x="-4" y="0" width="248" height="16" rx="3" fill="' + WOOD.frame + '"/><rect x="-4" y="0" width="248" height="4" rx="2" fill="' + WOOD.top + '"/><rect x="0" y="14" width="240" height="3" fill="' + WOOD.dark + '"/>' +
+        '<rect x="-2" y="' + (H - 22) + '" width="244" height="22" rx="2" fill="' + WOOD.dark + '"/><rect x="-2" y="' + (H - 22) + '" width="244" height="3" fill="' + WOOD.frame + '"/>' +
+        "</svg>";
+    }
+
+    /* -- on the floor beside the fitting bench: boxes stacked three high and two high, and a padded chair to wait in -- */
+    // the chair is drawn 108 x 142 and stands a little larger than that, next to the bench
+    var floor = '<ellipse cx="92" cy="194" rx="94" ry="6" fill="#1d1420" opacity=".3"/><ellipse cx="288" cy="194" rx="76" ry="6" fill="#1d1420" opacity=".3"/>' +
+      '<g transform="translate(210,-7) scale(1.42)"><path d="M22,84 h6 v56 h-6z M80,84 h6 v56 h-6z" fill="#1a2350"/>' +
+      '<rect x="18" y="8" width="72" height="66" rx="13" fill="#2b3a75"/><rect x="24" y="14" width="60" height="52" rx="10" fill="#e0457a"/>' +
+      '<rect x="28" y="17" width="52" height="6" rx="3" fill="#ff8fc8" opacity=".7"/>' +
+      '<path d="M41.6,40 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0 M61.6,40 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" fill="#b8325f"/>' +
+      '<rect x="4" y="70" width="100" height="22" rx="9" fill="#c93d6e"/><rect x="8" y="71" width="92" height="7" rx="3.5" fill="#ff8fc8"/>' +
+      '<path d="M10,90 h7 v52 h-7z M91,90 h7 v52 h-7z" fill="#24305e"/><path d="M10,116 H98" stroke="#24305e" stroke-width="4"/></g>';
+    [["navy", 2, 152], ["pink", 5, 112], ["cream", 0, 72], ["red", 94, 152], ["lilac", 97, 112]].forEach(function (s) {
+      floor += g("translate(" + s[1] + "," + s[2] + ")", '<rect x="0" y="6" width="86" height="34" rx="2" fill="' + BOX[s[0]][0] + '"/>' +
+        '<rect x="76" y="12" width="10" height="28" fill="#000" opacity=".12"/>' +
+        '<rect width="86" height="12" rx="2.5" fill="' + BOX[s[0]][1] + '"/><rect x="0" y="12" width="86" height="2.4" fill="#000" opacity=".2"/>' +
+        '<rect x="2" y="1.4" width="82" height="2" rx="1" fill="#fff" opacity=".28"/>' +
+        '<rect x="24" y="18" width="34" height="16" rx="2" fill="#fff8f3"/>' + g("translate(13.6,-3.6)", '<path d="' + SKATE_ICON + '" fill="#24305e"/>'));
+    });
+    var stack = svgOpen("fw-stack", 364, 200) + floor + "</svg>";
+
+    return { defs: defs, frames: frames, boots: boots, hooks: hooks, boxes: boxUnit(6, "fw-boxes"), boxesShort: boxUnit(4, "fw-boxes"), stack: stack };
+  }
+
+  /* ---------- Fitting shop: a skater trying on new skates (background scene) ---------- */
+
+  // An original illustration of the shopkeeper (the same friendly person as KEEPERS[0]) kneeling to lace
+  // a skater's brand-new skate. Everything is drawn in one 640 x 420 box, standing on a little rug.
+  // Ids start with "fs-", classes with "fs-"; the gentle motion lives in style.css.
+  function fitSceneSVG() {
+    // small private helpers for building SVG text
+    function P(d, fill, more) { return '<path d="' + d + '" fill="' + fill + '"' + (more || "") + "/>"; }
+    function S(d, color, w, more) {
+      return '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="' + w + '" stroke-linecap="round" stroke-linejoin="round"' + (more || "") + "/>";
+    }
+    function C(x, y, r, fill, more) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + fill + '"' + (more || "") + "/>"; }
+    function E(x, y, rx, ry, fill, more) { return '<ellipse cx="' + x + '" cy="' + y + '" rx="' + rx + '" ry="' + ry + '" fill="' + fill + '"' + (more || "") + "/>"; }
+    function G(more, inner) { return "<g" + more + ">" + inner + "</g>"; }
+    // a simple mitten hand: fingers point along angle a (degrees); flip puts the thumb on the other side
+    function hand(x, y, a, flip, skinC, lineC) {
+      return G(' transform="translate(' + x + "," + y + ") rotate(" + a + ")" + (flip ? " scale(1,-1)" : "") + '"',
+        P("M-8,-5.5 Q2,-8.5 8,-5.5 Q12.5,-2.5 11.5,2 Q10,6.5 2,6.8 L-8,5.5 Z", skinC) +
+        P("M-3,-5 Q1,-12 6,-9.5 Q6,-6 2,-4 Z", skinC) +
+        S("M4,-1.5 H9.5 M3.5,2.2 H9", lineC, 1.2));
+    }
+
+    // One figure skate, pointing right. (x, y) is the back of the boot's sole; foot length is about 60 at s = 1.
+    // o.worn draws an old, creased pair with a strawberry soft guard over the blade.
+    function skate(x, y, s, o) {
+      var lace = "", k;
+      for (k = 0; k < 5; k++) {           // criss-cross laces down the front of the boot
+        var t = k / 4, ax = 19 + t * 21, ay = -52 + t * 28;
+        lace += S("M" + (ax - 1) + "," + (ay - 2) + " L" + (ax + 5) + "," + (ay + 3) + " M" + (ax - 1) + "," + (ay + 3) + " L" + (ax + 5) + "," + (ay - 2), o.lace, 1.6);
+      }
+      var hooks = C(23.6, -51, 1.7, o.metal) + C(24.4, -45.5, 1.7, o.metal) + C(25.8, -40, 1.7, o.metal) +
+        C(29, -34.5, 1.4, o.metal) + C(33, -30.2, 1.4, o.metal) + C(37.6, -26.6, 1.4, o.metal) + C(42.4, -23.6, 1.4, o.metal);
+      var blade = o.worn
+        // a fluffy fruit-theme soft guard: a strawberry with seeds and a leafy cap at the toe
+        ? P("M-9,6 Q-10,2 -5,2 H56 Q66,1 68,7 Q69,14 60,15 Q50,17 40,15 Q30,17 20,15 Q10,17 0,15 Q-9,15 -9,6 Z", "#e0457a") +
+          C(4, 9, 1.1, "#fff2c8") + C(14, 11, 1.1, "#fff2c8") + C(24, 9, 1.1, "#fff2c8") + C(34, 11, 1.1, "#fff2c8") + C(44, 9, 1.1, "#fff2c8") + C(52, 12, 1.1, "#fff2c8") +
+          P("M58,2 Q64,-3 70,1 Q66,3 68,7 Q63,4 58,6 Z", "#2f9a6a")
+        : P("M0,2.5 H12 L10.5,9 H1.5 Z M36,2.5 H56 L54,9 H38 Z", o.bladeShade) +
+          P("M-7,9 Q-7,7 -5,7 H58 Q61,7 61,9.5 Q60,12 56,12 Q26,13.6 -3,12 Q-7,11.5 -7,9 Z", o.blade) +
+          P("M55,2.5 H62 Q66.5,2.5 67,5.4 L64.4,6.3 L66.6,8 L63.6,8.9 L65,10.6 L61.4,11.5 L58.5,11.9 Z", o.blade) +   // the toe pick and its teeth
+          P("M60.5,4 H62 Q64.8,4.2 65.3,5.5 L63,6.3 L64.9,7.9 L62.3,8.7 L63.4,10.2 L60.5,10.8 Z", o.bladeShade) +
+          S("M-3,8.6 H54", o.glint, 0.9, ' opacity=".9"');
+      var worn = o.worn
+        ? S("M2,-31 Q11,-34 20,-30 M1,-26 Q9,-29 18,-25 M44,-14 Q50,-15 54,-12", o.crease, 1.3) +
+          E(52, -8, 4, 2.2, o.crease, ' opacity=".6"') +
+          S("M23,-53 C31,-48 33,-37 29,-28 M24,-50 C34,-44 37,-30 33,-22", o.lace, 1.5)    // loose laces hanging down
+        : S("M3,-50 C1,-40 2,-30 5,-22", "#ffffff", 2, ' opacity=".8"');                   // shine on the new leather
+      return G(' transform="translate(' + x + "," + y + ") scale(" + s + ')"',
+        P("M17,-55 Q19,-67 29,-63 Q34,-61 31,-54 L27,-40 Z", o.boot) + S("M18,-56 Q20,-66 29,-62 Q33,-60 31,-54", o.shade, 1.6) +   // tongue
+        P("M0,0 C-6,-4 -7,-16 -4,-24 C-2,-29 1,-33 1,-39 C1,-45 -2,-49 -2,-55 Q10,-59 23,-56 C23,-50 24,-44 27,-38 C31,-31 37,-25 47,-21 C57,-18 63,-13 63,-6 Q63,0 57,0 Z", o.boot) +
+        P("M0,0 C-6,-4 -7,-16 -4,-24 C-2,-29 1,-33 1,-39 C1,-45 -2,-49 -2,-55 Q2,-56 6,-56 C5,-48 6,-42 6,-36 C5,-26 4,-14 9,0 Z", o.shade) +
+        P("M-2,-55 Q10,-59 23,-56 L23,-52 Q10,-55 -1,-51 Z", o.shade) +              // padded collar
+        P("M18,-55 C19,-47 21,-41 25,-35 C30,-28 36,-24 43,-21 L47,-22 C39,-25 33,-30 29,-37 C26,-43 25,-49 24,-56 Z", o.shade) +
+        lace + hooks + worn +
+        P("M-3,0 H58 Q62,0 62,2.8 H-3 Z", o.sole) + P("M-3,0 H13 V4 H-3 Z", o.heel) +
+        blade);
+    }
+
+    var svg = "";
+
+    // ---- the little oval rug, and soft shadows on it ----
+    svg += E(330, 401, 306, 19, "#fbe9d0") + E(330, 401, 294, 15.5, "#e0457a") + E(330, 401, 278, 12.5, "#6b4aa8") +
+      '<ellipse cx="330" cy="401" rx="286" ry="14" fill="none" stroke="#fbe9d0" stroke-width="1.4" stroke-dasharray="2 6" opacity=".55"/>';
+    svg += G(' fill="#1d1420" opacity=".3"',
+      E(154, 398, 112, 6) + E(288, 398, 44, 4) + E(420, 398, 70, 5) + E(330, 395, 26, 3) + E(52, 399, 40, 4));
+
+    // ---- the padded fitting bench ----
+    svg += P("M78,326 H88 V392 H78 Z M220,326 H230 V392 H220 Z", "#6e4e2c") +            // back legs
+      P("M58,326 H70 V398 H58 Z M238,326 H250 V398 H238 Z M64,364 H244 V371 H64 Z", "#8a6238") +
+      '<rect x="50" y="316" width="208" height="12" rx="3" fill="#a8794a"/>' +
+      P("M44,300 Q44,288 58,288 H250 Q264,288 264,300 V308 Q264,320 252,320 H56 Q44,320 44,308 Z", "#f2b83f") +
+      P("M48,297 Q49,289 60,289 H248 Q259,289 260,297 Z", "#ffd36b") +
+      G(' fill="#c48a1e"', C(78, 307, 2.6) + C(120, 307, 2.6) + C(162, 307, 2.6)) +
+      S("M72,302 L78,307 L72,312 M84,302 L78,307 L84,312 M114,302 L120,307 L114,312 M126,302 L120,307 L126,312 M156,302 L162,307 L156,312", "#e0a32e", 1.2);
+
+    // ---- old, worn skates beside the bench ----
+    var old = { boot: "#d9c4a6", shade: "#bfa684", lace: "#efe4d0", metal: "#a58b6a", crease: "#a3875f", sole: "#6e4e2c", heel: "#5a3e22", worn: true };
+    svg += skate(50, 381, 0.84, old) + skate(10, 387, 0.9, old);
+
+    // ---- the open skate box: lid propped behind, tissue paper puffing out ----
+    svg += G(' transform="rotate(-7 160 360)"',
+      '<rect x="108" y="326" width="100" height="42" rx="4" fill="#2b3a75"/><rect x="108" y="326" width="100" height="42" rx="4" fill="none" stroke="#f2b83f" stroke-width="2.4"/>' +
+      S("M158,336 V358 M148,341 L168,353 M148,353 L168,341", "#fbe9d0", 2, ' opacity=".85"'));   // a plain snowflake, no brand
+    svg += P("M116,368 Q124,346 140,354 Q148,338 162,350 Q176,336 186,352 Q200,346 206,366 Z", "#fff8f3") +
+      P("M124,368 Q132,354 144,360 Q154,350 166,360 Q176,352 184,364 L188,368 Z", "#ff8fc8") +
+      P("M114,366 L206,366 L214,358 L122,358 Z", "#1a2350") +
+      P("M114,366 H206 V398 H114 Z", "#24305e") + P("M206,366 L214,358 V390 L206,398 Z", "#1a2350") +
+      P("M114,366 H206 V371 H114 Z", "#f2b83f") +
+      P("M150,366 Q160,350 172,360 Q178,354 186,364 L188,366 Z", "#fff8f3", ' opacity=".95"');
+
+    // ---- the skater's free foot in a pink sock, swinging a little ----
+    svg += G(' class="fs-swing"',
+      S("M260,292 L232,362", "#a87455", 18) +
+      P("M225,342 L243,349 L235,366 Q247,372 250,382 Q250,390 240,388 Q230,385 223,372 Q218,362 225,342 Z", "#ff8fc8") +
+      S("M226,344 L243,351", "#fff8f3", 4) + C(231, 360, 1.6, "#fff8f3") + C(238, 377, 1.6, "#fff8f3"));
+
+    // ---- the skater: sitting on the bench, hands clasped, so excited ----
+    var skin = "#a9714f", tights = "#b98262", hair = "#3b2420";
+    svg += S("M196,282 L270,288", tights, 25);                                          // thigh on the cushion
+    svg += P("M182,262 C180,240 182,222 190,208 Q206,196 222,204 C228,222 226,242 218,262 Z", "#6c3fc8") +   // bodice
+      P("M180,258 C168,268 160,282 162,292 Q174,299 190,294 Q206,301 222,293 Q236,297 250,288 C240,276 228,264 218,256 Z", "#7b4ad8") +   // skirt over the lap
+      S("M163,291 Q174,298 190,293 Q206,300 222,292 Q236,296 249,288", "#dcc2ff", 3.4) +
+      P("M180,254 Q200,260 219,254 L218,262 Q200,267 181,262 Z", "#f3c34e") +            // sparkly belt
+      C(193, 236, 1.6, "#f3c34e") + C(203, 226, 1.3, "#f3c34e") + C(209, 242, 1.3, "#f3c34e");
+    // far forearm peeking from behind, then the near arm with clasped hands under the chin
+    svg += S("M222,238 L238,208", "#8f74d0", 13) +
+      S("M210,212 L222,248 L238,210", "#a88be4", 14) +
+      E(240, 202, 9.5, 10.5, skin) + E(234, 206, 7, 8, skin) + S("M236,198 Q240,196 244,198", "#8c5a3c", 1.5);
+    // head: neck, hair, face
+    svg += S("M214,196 L220,184", skin, 15) +
+      C(214, 112, 15, hair) + P("M202,122 Q214,114 226,122 L224,128 Q214,122 204,128 Z", "#ff8fc8") +      // bun and scrunchie
+      P("M196,150 C190,170 194,186 206,190 L214,170 Z", hair) +
+      C(226, 158, 31, skin) +
+      C(199, 162, 7, skin) + C(199, 162, 3.4, "#8c5a3c", ' opacity=".5"') +
+      P("M196,156 C192,128 220,118 240,128 C252,134 258,144 257,154 C246,148 232,140 222,146 C214,150 206,154 196,166 Z", hair) +
+      S("M213,134 Q226,128 238,134", "#5a3a30", 2.4, ' opacity=".8"') +
+      S("M198,152 C195,132 214,122 234,126", "#7a4e3c", 2, ' opacity=".9"') + S("M203,106 Q208,99 216,98", "#7a4e3c", 2, ' opacity=".9"') +
+      G(' class="fs-eyes"', E(230, 160, 3.4, 4.3, "#1d1420") + E(248, 160, 3, 4.1, "#1d1420") + C(231.2, 158.4, 1.2, "#fff") + C(249, 158.4, 1.1, "#fff")) +
+      S("M225,150 Q230,147 235,150 M244,150 Q248,147 252,150", hair, 2) +
+      E(222, 171, 6.5, 3.8, "#ff7aa8", ' opacity=".45"') + E(254, 171, 4.5, 3.4, "#ff7aa8", ' opacity=".45"') +
+      P("M231,172 Q239,184 247,172 Z", "#5a2430") + P("M234,177 Q239,174 244,177 Q239,182 234,177 Z", "#ff7aa8");
+
+    // ---- the shopkeeper (KEEPERS[0]) kneeling to lace the skate ----
+    var kSkin = "#f1c7a5", kHair = "#5a2e1c", top = "#fbe9d0", apron = "#b8433f", pants = "#2f7f8f";
+    // far leg: knee up, foot planted beside the skate
+    svg += S("M402,316 L334,300", "#256673", 26) + S("M334,300 L337,376", "#256673", 22) +
+      P("M314,390 Q314,380 324,378 H344 Q352,378 352,386 V394 H314 Z", "#4a1e28") + S("M316,394 H351", "#e8cfae", 2);
+    // far arm (in shade): comes forward from the far shoulder, its elbow just clear of the near arm, and holds the
+    // lace ends up
+    svg += G(' class="fs-tug"',
+      S("M372,250 L341,283", "#e6cfb0", 15) + S("M339,286 L312,315", kSkin, 11.5) + S("M343,280 L335,290", "#e6cfb0", 14) +
+      S("M284,330 Q292,318 302,315 M285,333 Q295,325 305,321", "#ffffff", 1.6) +
+      hand(306, 316, 155, true, kSkin, "#d9a585"));
+    // near leg: knee on the floor, toes tucked under
+    svg += S("M408,318 L414,384", pants, 28) + S("M414,386 L486,374", pants, 22) +
+      P("M480,368 Q484,358 494,360 Q503,362 503,372 L500,392 Q500,398 492,398 L484,398 Q478,396 479,388 Z", "#5a2430") + S("M502,372 L500,393", "#e8cfae", 2) +
+      E(414, 318, 22, 17, pants);
+    // body: cream jumper leaning toward the skate
+    svg += P("M386,324 C374,308 360,290 354,272 C350,258 354,246 364,240 C376,233 394,236 405,249 C417,265 427,292 433,322 Z", top) +
+      P("M405,249 C417,265 427,292 433,322 L423,322 C418,297 409,273 397,257 Z", "#f0d9bb") +
+      // red apron: bib, waist ties with a bow at the back, a pocket with a shoehorn peeking out
+      P("M355,256 Q362,246 375,243 C386,262 398,290 410,318 L426,352 Q408,362 391,359 L386,324 C374,308 360,290 354,272 Z", apron) +
+      S("M361,256 Q366,250 373,248 M376,250 C386,268 396,292 406,316 L420,348", "#fbe9d0", 1.3, ' stroke-dasharray="3 3" opacity=".7"') +
+      S("M394,355 Q408,358 421,351", "#fbe9d0", 1.3, ' stroke-dasharray="3 3" opacity=".7"') +
+      S("M408,318 L433,318", apron, 4) +
+      S("M433,318 Q444,308 448,317 Q444,325 433,318 Q441,328 438,337 M433,318 Q426,328 429,337", "#9a3634", 3.2) +
+      P("M397,332 L417,329 L420,347 L400,350 Z", "#9a3634") +
+      S("M404,334 L400,316", "#a8794a", 5) + S("M400,316 L398,305 Q397,299 402,300 Q406,301 404,306", "#dfe7f4", 2);   // lacing hook
+    // head: tilted down toward the laces
+    svg += S("M368,246 L357,233", kSkin, 15) +
+      P("M352,200 C384,198 390,226 381,244 C373,250 362,248 356,242 Z", kHair) +
+      C(346, 214, 30, kSkin) +
+      C(372, 220, 7, kSkin) + C(372, 220, 3.2, "#d9a585", ' opacity=".6"') +
+      G(' class="fs-keyes"', E(330, 222, 2.9, 3.5, "#1d1420") + E(346, 223, 2.9, 3.5, "#1d1420")) +
+      E(325, 233, 5.5, 3.2, "#ff7aa8", ' opacity=".45"') + E(352, 234, 5.5, 3.2, "#ff7aa8", ' opacity=".45"') +
+      S("M331,236 Q337,242 343,236", "#5a2430", 2.4) +
+      G(' transform="rotate(-14 346 214)"',
+        P("M314,206 C312,170 380,170 378,206 Z", "#e0457a") +
+        '<rect x="310" y="198" width="72" height="13" rx="6.5" fill="#fbe9d0"/>' +
+        S("M320,199 V210 M330,199 V211 M340,199 V211 M350,199 V211 M360,199 V211 M370,199 V210", "#e8cfae", 2) +
+        C(346, 172, 9, "#fbe9d0"));
+
+    // ---- the new skate: crisp white boot, shiny blade ----
+    svg += P("M260,290 C256,306 258,320 261,334 L282,334 C283,320 284,304 283,290 Z", tights) + C(271, 289, 12.6, tights) +
+      skate(258, 382, 1, { boot: "#fff8f3", shade: "#e6dcea", lace: "#ffffff", metal: "#f2b83f", sole: "#a8794a", heel: "#8a6238",
+        blade: "#e8eef8", bladeShade: "#b9c6da", glint: "#7be3ff" });
+
+    // ---- near arm: hand pressing the laces at the hooks ----
+    svg += G(' class="fs-press"',
+      S("M348,298 L307,337", kSkin, 12) +
+      S("M380,252 L346,300", "#dcc29f", 19) + S("M380,252 L346,300", top, 15.5) + S("M350,295 L343,304", "#f3dfc4", 15.5) +
+      hand(301, 342, 136, true, kSkin, "#d9a585"));
+
+    // ---- props in front: a foot-measuring device and a lacing hook ----
+    svg += P("M500,410 L590,410 L606,396 L516,396 Z", "#6b7590") + P("M502,407 L588,407 L602,395 L516,395 Z", "#c7d2e3") +
+      S("M520,395 Q506,396 505,402 Q505,408 513,409", "#9fb0c8", 4.5) +
+      S("M530,405 L533,402 M536,405 L537.5,403.5 M542,405 L545,402 M548,405 L549.5,403.5 M566,405 L569,402 M572,405 L573.5,403.5 M578,405 L581,402 M584,405 L585.5,403.5", "#24305e", 1.3) +
+      P("M556,395 H564 L556,407 H548 Z", "#e0457a") +
+      P("M424,406 Q450,402 470,403 Q486,400 495,404 Q488,411 470,410 Q450,410 424,409 Q420,407.5 424,406 Z", "#f2b83f") +   // shoehorn
+      C(429, 407.5, 1.6, "#8a6238") + S("M474,404.6 Q484,403 491,405", "#ffd36b", 1.3);
+
+    // ---- a little heart and a sparkle over the new skate ----
+    svg += G(' transform="translate(300,292)"', G(' class="fs-heart"',
+      P("M0,6 C-11,-1 -11,-11 -5,-11 C-2.4,-11 0,-8.6 0,-6 C0,-8.6 2.4,-11 5,-11 C11,-11 11,-1 0,6 Z", "#ff8fc8")));
+    svg += G(' transform="translate(322,368)"', G(' class="fs-glint"',
+      P("M0,-8 Q1,-1 8,0 Q1,1 0,8 Q-1,1 -8,0 Q-1,-1 0,-8 Z", "#fff2c8")));
+
+    return '<svg class="fs-scene" viewBox="0 0 640 420" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">' + svg + "</svg>";
+  }
+  /* ====== END OF FITTING SHOP ART ==================================================================== */
+
+  // A window onto the snowy mountains with snow falling past the glass, which is w x h (the big one is 250 x 470,
+  // like the window in the other shops). The flakes fall the whole height of the glass and start spread out, so
+  // the snow never stops; with reduced motion they simply hang in the air.
+  function snowWindowSVG(w, h, n, key) {
+    var id = "win" + key, seedW = 7 + n, rnd = function () { seedW = (seedW * 16807) % 2147483647; return (seedW - 1) / 2147483646; };
+    var flakes = "";
+    for (var k = 0; k < n; k++) {
+      var r = 1.3 + rnd() * 2.2, y = rnd() * h, dur = 9 - r * 1.4 + rnd() * 2;
+      flakes += '<circle cx="' + f(rnd() * w) + '" cy="' + f(y) + '" r="' + f(r) + '" style="--y:' + f(y) + "px;--dx:" + f(4 + rnd() * 12) + "px;--d:" + f(dur) + "s;animation-delay:" + f(-((y + 12) / (h + 24)) * dur) + 's"/>';
+    }
+    var X = function (t) { return f(w * t); }, Y = function (t) { return f(h * t); };
+    var bars = "M" + f(w / 2) + ",0 V" + h + (h > w ? " M0," + Y(0.49) + " H" + w : "");
+    return '<svg viewBox="-12 -12 ' + (w + 24) + " " + (h + 32) + '" aria-hidden="true" focusable="false">' +
+      '<defs><clipPath id="' + id + 'c"><rect width="' + w + '" height="' + h + '"/></clipPath>' +
+      '<linearGradient id="' + id + 'n" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b1f5a"/><stop offset="1" stop-color="#6a4fae"/></linearGradient></defs>' +
+      '<g clip-path="url(#' + id + 'c)">' +
+        '<rect width="' + w + '" height="' + h + '" fill="url(#' + id + 'n)"/>' +
+        '<path d="M0,' + Y(0.745) + " L" + X(0.28) + "," + Y(0.553) + " L" + X(0.44) + "," + Y(0.638) + " L" + X(0.68) + "," + Y(0.468) + " L" + w + "," + Y(0.702) + " V" + h + ' H0 Z" fill="#cfe0ff"/>' +
+        '<path d="M' + X(0.28) + "," + Y(0.553) + " L" + X(0.33) + "," + Y(0.6) + " L" + X(0.28) + "," + Y(0.59) + " L" + X(0.23) + "," + Y(0.61) + " Z M" + X(0.68) + "," + Y(0.468) + " L" + X(0.74) + "," + Y(0.52) + " L" + X(0.68) + "," + Y(0.51) + " L" + X(0.62) + "," + Y(0.53) + ' Z" fill="#ffffff"/>' +
+        '<rect y="' + Y(0.894) + '" width="' + w + '" height="' + Y(0.106) + '" fill="#7be3ff" opacity=".6"/>' +
+        '<g class="fit-snow" fill="#fff" style="--h:' + h + 'px">' + flakes + "</g>" +
+      "</g>" +
+      '<path d="M0,0 H' + w + " V" + h + " H0 Z " + bars + '" fill="none" stroke="#8a6238" stroke-width="14"/>' +
+      '<rect x="-12" y="' + (h + 2) + '" width="' + (w + 24) + '" height="16" rx="4" fill="#a8794a"/>' +
+      "</svg>";
+  }
+
+  // Text from cards.js with every [placeholder] marked as still to fill in
+  function withTodos(t) {
+    return esc(t).replace(/\[[^\]]*\]/g, function (m) { return '<span class="todo">' + m + "</span>"; });
+  }
+  function boardLink(href, label) {
+    href = String(href).trim();
+    if (/^(javascript|data|vbscript):/i.test(href)) return "";
+    return '<a class="board-link" href="' + esc(href) + '"' + (/^https?:/i.test(href) ? ' target="_blank" rel="noopener"' : "") + ">" + esc(label) + " &rarr;</a>";
+  }
+
+  // Inside the skate fitting shop: the snowy window on the left, a slatwall with the boots at eye level, guards, blades
+  // and a tall unit of boot boxes, the shopkeeper fitting a skater with new skates in front, and a letter board with tabs
+  // for About me, the resume and (in an artifact's shop) its card.
+  function fitInteriorHTML(s) {
+    var A = ABOUT, a = s.a, p = fitPalette(s), done = a && a.status === "done";
+    var tabs = [["about", "About me"], ["resume", "Resume"]];
+    if (a) tabs.push(["art", "Artifact " + a.number]);
+    var todo = A.resume.some(function (sec) { return /\[[^\]]*\]/.test(sec.heading + sec.items.join(" ")); });
+    var panel = function (key, inner) {
+      return '<div class="fit-panel" id="fitPanel-' + key + '" role="tabpanel" aria-labelledby="fitTab-' + key + '" tabindex="0">' + inner + "</div>";
+    };
+    var about = panel("about",
+      '<h3 class="row label fit-plabel">About me</h3>' +
+      '<p class="board-text">' + withTodos(A.about) + "</p>" +
+      (A.traits.length ? '<ul class="fit-traits" aria-label="What I\'m like">' + A.traits.map(function (t) { return "<li>" + withTodos(t) + "</li>"; }).join("") + "</ul>" : ""));
+    var resume = panel("resume",
+      '<h3 class="row label fit-plabel">Resume</h3>' +
+      (todo ? '<p class="fit-note"><span aria-hidden="true">&#9998;</span> Still being filled in</p>' : "") +
+      (A.resume.length ? A.resume.map(function (sec) {
+        return (sec.heading ? '<h4 class="row label fit-rhead">' + withTodos(sec.heading) + "</h4>" : "") +
+          (sec.items.length ? '<ul class="fit-list">' + sec.items.map(function (t) { return "<li>" + withTodos(t) + "</li>"; }).join("") + "</ul>" : "");
+      }).join("") : '<p class="board-text">My resume is coming soon.</p>') +
+      (A.resumeLink && boardLink(A.resumeLink, A.resumeLinkLabel) ? '<div class="row foot">' + boardLink(A.resumeLink, A.resumeLinkLabel) + "</div>" : ""));
+    var art = a ? panel("art",
+      '<div class="row head"><span>Artifact ' + esc(a.number) + '</span><span class="tag">' + (done ? "&#9733; Open" : "&#9825; Idea") + "</span></div>" +
+      '<h3 class="row title">' + esc(a.title) + "</h3>" +
+      '<div class="row label">' + (done ? "Reflection" : "The idea") + "</div>" +
+      '<p class="board-text">' + esc(a.reflection) + "</p>" +
+      '<div class="row foot">' + (a.link && boardLink(a.link, a.linkLabel || "Open the artifact") || '<span class="board-link pending">Link coming when it\'s built</span>') + "</div>") : "";
+    var W = fitWallArt();
+    var hook = '<svg viewBox="0 0 24 40" focusable="false"><rect x="5" y="0" width="14" height="6" rx="2" fill="#c48a1e"/><rect x="10" y="4" width="4" height="9" fill="#c48a1e"/>' +
+      '<g fill="none" stroke="#f2b83f" stroke-width="2.4"><ellipse cx="12" cy="17" rx="3.4" ry="5"/><ellipse cx="12" cy="26" rx="3.4" ry="5"/><ellipse cx="12" cy="35" rx="3.4" ry="5"/></g></svg>';
+    return '<div class="int-wall fit-room" style="--wall:' + p.wall + ";--neon:" + p.neon + ";--awn:" + p.awn + '">' + W.defs +
+      // the back wall: a pale slatwall from the floor almost to the ceiling, right of the window
+      '<div class="fit-slat" aria-hidden="true"></div>' +
+      // pendant lamps, one over the letter board and one over the wall of boots; style.css hangs them above those two
+      // (wide screens only: on tall ones they would hang behind the Back button)
+      ["board", "wall"].map(function (k) {
+        return '<div class="fit-lamp fit-lamp-' + k + '" aria-hidden="true"><svg viewBox="0 0 340 260" focusable="false">' +
+          '<path d="M170,0 V44" stroke="#1a1418" stroke-width="3"/><path d="M140,80 L158,42 H182 L200,80 Z" fill="#f2b83f"/><circle cx="170" cy="85" r="9" fill="#fff4d6"/></svg></div>';
+      }).join("") +
+      // the snowy window: tall on the left of wide screens, a small one at the top right of tall and narrow screens
+      '<div class="fit-window fit-window-big" aria-hidden="true">' + snowWindowSVG(250, 470, 26, "B") + "</div>" +
+      '<div class="fit-window fit-window-small" aria-hidden="true">' + snowWindowSVG(220, 96, 14, "S") + "</div>" +
+      // on the slatwall: framed pictures and blades, the boots at eye level, the soft guards, the unit of boot boxes
+      '<div class="fit-art fit-frames" aria-hidden="true">' + W.frames + "</div>" +
+      '<div class="fit-art fit-boots" aria-hidden="true">' + W.boots + "</div>" +
+      '<div class="fit-art fit-hooks" aria-hidden="true">' + W.hooks + "</div>" +
+      '<div class="fit-floor" aria-hidden="true">' +
+        '<svg class="fit-plant" viewBox="0 0 70 90"><g fill="#2f9a6a"><ellipse cx="22" cy="34" rx="9" ry="22" transform="rotate(-24 22 34)"/><ellipse cx="35" cy="26" rx="9" ry="25"/><ellipse cx="48" cy="34" rx="9" ry="22" transform="rotate(24 48 34)"/></g><path d="M14,56 H56 L50,88 H20 Z" fill="#c0532a"/></svg>' +
+      "</div>" +
+      '<div class="fit-art fit-boxes fit-boxes-tall" aria-hidden="true">' + W.boxes + "</div>" +
+      '<div class="fit-art fit-boxes fit-boxes-short" aria-hidden="true">' + W.boxesShort + "</div>" +
+      '<div class="fit-art fit-stack" aria-hidden="true">' + W.stack + "</div>" +
+      '<div class="fit-scene"><p class="keeper-say fit-say">' + esc(A.keeperSays) + "</p>" + fitSceneSVG() + "</div>" +
+      '<button type="button" class="int-back" id="intBack"><span aria-hidden="true">&larr;</span> Back to the village</button>' +
+      // the letter board hangs from the slatwall on two brass hooks and chains
+      '<div class="fit-hang" aria-hidden="true">' + hook + hook + "</div>" +
+      '<section class="board fit-board" aria-labelledby="boardTitle">' +
+        '<div class="fit-top">' +
+          '<div class="row head"><span>' + esc(A.shopName) + '</span><span class="tag">&#9733; About me</span></div>' +
+          '<h2 class="row title" id="boardTitle">' + withTodos(A.greeting) + "</h2>" +
+          '<div class="row fit-tabs" role="tablist" aria-label="On the board">' + tabs.map(function (t) {
+            return '<button type="button" class="fit-tab" role="tab" id="fitTab-' + t[0] + '" data-tab="' + t[0] + '" aria-controls="fitPanel-' + t[0] + '" aria-selected="false" tabindex="-1">' + esc(t[1]) + "</button>";
+          }).join("") + "</div>" +
+        "</div>" +
+        '<div class="fit-scroll">' + about + resume + art + "</div>" +
+      "</section>" +
+    "</div>";
+  }
+
+  // The board's tabs. Until this runs (or if it ever fails) there are no tabs and every section shows, one under another.
+  function wireTabs(box, first) {
+    var board = box.querySelector(".fit-board");
+    if (!board) return;
+    var tabs = Array.prototype.slice.call(board.querySelectorAll(".fit-tab")), scroller = board.querySelector(".fit-scroll");
+    var pick = function (t, focus) {
+      tabs.forEach(function (b) {
+        var on = b === t, panel = $(b.getAttribute("aria-controls"));
+        b.setAttribute("aria-selected", on ? "true" : "false");
+        b.tabIndex = on ? 0 : -1;
+        if (panel) panel.classList.toggle("on", on);
+      });
+      if (scroller) scroller.scrollTop = 0;
+      if (focus) t.focus();
+    };
+    tabs.forEach(function (b, k) {
+      b.addEventListener("click", function () { pick(b, false); });
+      // arrow keys move between the tabs (and show them), Home and End jump to the first and last
+      b.addEventListener("keydown", function (e) {
+        var n = tabs.length, j = { ArrowRight: (k + 1) % n, ArrowLeft: (k + n - 1) % n, Home: 0, End: n - 1 }[e.key];
+        if (j === undefined) return;
+        e.preventDefault();
+        pick(tabs[j], true);
+      });
+    });
+    pick(tabs.filter(function (b) { return b.getAttribute("data-tab") === first; })[0] || tabs[0], false);
+    board.classList.add("tabbed");
+  }
+
   var shopState = { open: -1, pushed: false, busy: false, later: false, backPending: false, backTimer: 0 };
   function doorRect(i) {
     var btn = document.querySelector('.shop[data-i="' + i + '"]');
@@ -2918,15 +4159,17 @@
     if (ft) { if (on) ft.setAttribute("inert", ""); else ft.removeAttribute("inert"); }
   }
 
-  function enterShop(i, animate) {
-    var list = window.ARTIFACTS || [], a = list[i];
-    if (!a || shopState.busy || shopState.open === i) return;
+  // i is the shop's place on the street (data-i). tab picks the fitting shop's first tab: "about", "resume" or "art".
+  function enterShop(i, animate, tab) {
+    var s = SHOPS[i];
+    if (!s || shopState.busy || shopState.open === i) return;
     var box = $("interior");
-    box.innerHTML = interiorHTML(a, i);
+    box.innerHTML = s.fit ? fitInteriorHTML(s) : interiorHTML(s.a, s.ai);
+    if (s.fit) safely("board tabs", function () { wireTabs(box, tab || "about"); });
     $("intBack").addEventListener("click", function () { leaveShop(true); });
     shopState.open = i;
     if (animate) {
-      try { history.pushState({ shop: i }, "", "#artifact-" + a.number); shopState.pushed = true; } catch (e) { shopState.pushed = false; }
+      try { history.pushState({ shop: i }, "", shopHash(s)); shopState.pushed = true; } catch (e) { shopState.pushed = false; }
     }
     var btn = document.querySelector('.shop[data-i="' + i + '"]');
     var r = doorRect(i);
@@ -2988,7 +4231,7 @@
       syncLater();
     };
     // closed without going back through history (a deep link, or the history entry was not ours): tidy the URL
-    try { if (/^#artifact-/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search + "#village"); } catch (e) {}
+    try { if (/^#(artifact-|about$)/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search + "#village"); } catch (e) {}
     // Bring the shop on screen first (a deep link opens it with the page at the top of the lake, far above the shop),
     // so the door zooms shut onto a shop people can see and the focus comes back to a visible button. The jump is
     // instant: html scrolls smoothly, and the door's place is measured straight after.
@@ -3009,13 +4252,23 @@
     anim.onfinish = done;
   }
 
+  // The address of a shop, and the shop an address points at: #artifact-N (in the fitting shop that is its artifact
+  // tab), or #about for the skate fitting shop
+  function shopHash(s) { return s.fit ? "#about" : "#artifact-" + s.a.number; }
+  function shopFromHash(h) {
+    var m = /^#artifact-(\d+)/.exec(h || "");
+    if (m) for (var i = 0; i < SHOPS.length; i++) if (SHOPS[i].a && +SHOPS[i].a.number === +m[1]) return { i: i, tab: "art" };
+    if (h === "#about" && fitIndex() >= 0) return { i: fitIndex(), tab: "about" };
+    return null;
+  }
+
   // Match the shop to the address after Back / Forward. While a door is still zooming open or shut, wait for it.
   function syncShop() {
     shopState.backPending = false; clearTimeout(shopState.backTimer);
     if (shopState.busy) { shopState.later = true; return; }
-    var m = /^#artifact-(\d+)/.exec(location.hash);
-    if (m) {
-      openFromNumber(+m[1], false);
+    var t = shopFromHash(location.hash);
+    if (t) {
+      enterShop(t.i, false, t.tab);
       // Forward into a shop we opened earlier: its entry is ours again, so closing goes back through history
       if (shopState.open >= 0 && history.state && history.state.shop === shopState.open) shopState.pushed = true;
     }
@@ -3024,15 +4277,64 @@
   function syncLater() { if (shopState.later) { shopState.later = false; syncShop(); } }
   function bindShops() {
     window.addEventListener("popstate", syncShop);
+    // a typed or linked #about then scrolls the page behind to its #about spot, which takes the focus off Back: give it back
+    window.addEventListener("hashchange", function () {
+      if (shopState.open >= 0 && document.documentElement.classList.contains("in-shop") && (!document.activeElement || document.activeElement === document.body)) $("intBack").focus({ preventScroll: true });
+    });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && shopState.open >= 0) leaveShop(true);
     });
-    var m = /^#artifact-(\d+)/.exec(location.hash);
-    if (m) openFromNumber(+m[1], false);
+    var t = shopFromHash(location.hash);
+    if (t) {
+      enterShop(t.i, false, t.tab);
+      // with #about the browser then jumps to the #about spot on the page, which takes the focus off Back: give it back
+      var refocus = function () {
+        if (shopState.open >= 0 && (!document.activeElement || document.activeElement === document.body)) $("intBack").focus({ preventScroll: true });
+      };
+      document.addEventListener("DOMContentLoaded", function () { setTimeout(refocus, 0); });
+      window.addEventListener("load", refocus);
+    }
   }
-  function openFromNumber(n, animate) {
-    var list = window.ARTIFACTS || [];
-    for (var i = 0; i < list.length; i++) if (+list[i].number === n) { enterShop(i, animate); return; }
+
+  // "About" links (the navigation and the village text) open the skate fitting shop: the page glides down to its
+  // door, then the door zooms open as usual. Without script.js they still jump down to the street (#about).
+  var aboutWait = 0;
+  function bindAboutLinks() {
+    document.addEventListener("click", function (e) {
+      var link = e.target.closest && e.target.closest('a[href="#about"]');
+      if (!link || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var i = fitIndex();
+      if (i < 0 || !document.querySelector('.shop[data-i="' + i + '"]')) return;   // no shop to open: just follow the link
+      e.preventDefault();
+      openFitShop(i);
+    });
+  }
+  function openFitShop(i) {
+    if (shopState.open >= 0 || shopState.busy || aboutWait) return;
+    var btn = document.querySelector('.shop[data-i="' + i + '"]'), root = document.documentElement;
+    var onScreen = function () {
+      var r = doorRect(i);
+      return r && r.top >= 0 && r.bottom <= window.innerHeight && r.left >= 0 && r.right <= window.innerWidth;
+    };
+    if (onScreen()) { enterShop(i, true, "about"); return; }
+    if (reduceMotion) {
+      root.style.scrollBehavior = "auto";
+      btn.scrollIntoView({ block: "center", inline: "center" });
+      root.style.scrollBehavior = "";
+      enterShop(i, true, "about");
+      return;
+    }
+    btn.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    // wait until the scrolling has settled with the door on screen (or give up waiting after a moment)
+    var t0 = Date.now(), last = "", still = 0, street = $("street");
+    var wait = function () {
+      var now = Math.round(window.scrollY || window.pageYOffset || 0) + "," + Math.round(street ? street.scrollLeft : 0);
+      still = now === last ? still + 1 : 0;
+      last = now;
+      if ((still >= 3 && onScreen()) || Date.now() - t0 > 1600) { aboutWait = 0; enterShop(i, true, "about"); }
+      else aboutWait = requestAnimationFrame(wait);
+    };
+    aboutWait = requestAnimationFrame(wait);
   }
 
   function buildVillageStars() {
@@ -3052,9 +4354,11 @@
   }
   safely("shops", renderShops);
   safely("shop interiors", bindShops);
+  safely("about links", bindAboutLinks);
   safely("village", buildVillageStars);
   safely("layout", measure);
   safely("skaters", buildSkaters);
+  safely("resort", buildResort);
   var onLayoutChange = function () { safely("layout", measure); };
   window.addEventListener("resize", onLayoutChange);
   if (tallQuery) {
@@ -3078,7 +4382,7 @@
   } else {
     // A still picture: skaters resting in their poses, finished marks on the ice, snow hanging in the air.
     safely("still scene", function () {
-      placeFox(0);
+      placeDogs(0);
       drawStillMarks();
       drawSnow(0);
     });

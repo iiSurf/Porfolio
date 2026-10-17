@@ -1,14 +1,102 @@
 /*
   ============================================================
-  YOUR ARTIFACT CARDS  (this is the only file you need to edit)
+  YOUR CARDS  (this is the only file you need to edit)
   ============================================================
 
-  Each card is one { ... } block below. To hand in an artifact:
+  Two things live in this file:
+    - ABOUT: your About me and your resume. They hang in the
+      skate fitting shop (fittingShop below picks which shop).
+    - ARTIFACTS: your five artifact cards, one shop each.
 
-    1. Find its block (number: 2, number: 3, ...).
+  To hand in an artifact:
+
+    1. Find its block in ARTIFACTS (number: 2, number: 3, ...).
     2. Change  status: "idea"  to  status: "done".
     3. Fill in  title,  link,  and  reflection.
     4. Save, push to GitHub, and submit the same site link on Canvas.
+
+  Tip: keep the quote marks and the comma at the end of each line.
+  If the page goes blank after an edit, a missing quote or comma is
+  almost always the reason.
+*/
+
+/*
+  ------------------------------------------------------------
+  ABOUT ME AND RESUME  (the skate fitting shop)
+  ------------------------------------------------------------
+
+  Fields:
+    fittingShop      Which shop becomes the skate fitting shop.
+                       1 to 5   = that artifact's shop. Its artifact card
+                                  stays inside too, on its own tab.
+                       "extra"  = a sixth shop of its own at the start of
+                                  the street (0 does the same). All five
+                                  artifact shops then stay as they are.
+    shopName         The words on the shop's sign. Short is best.
+    greeting         The big hello at the top of the board.
+    about            A few sentences about you.
+    traits           The little tiles under your About text.
+    keeperSays       What the shopkeeper says in the speech bubble.
+    resume           Your resume, in sections. Each section has a heading
+                     and a list of items. Add or delete items and whole
+                     sections as you like.
+                     Anything in [square brackets] shows up as "still to
+                     fill in", so replace it, brackets and all, with your
+                     real details.
+    resumeLink       A link to your resume file, for example a PDF.
+                     Leave "" and the button stays hidden.
+    resumeLinkLabel  The words on that button.
+*/
+
+window.ABOUT = {
+  fittingShop: 1,
+  shopName: "Skate Fitting",
+  greeting: "Hi, I'm nic",
+  about:
+    "I love figure skating, and I'm learning to build websites and apps. " +
+    "This quarter I'm making five projects, and each one gets its own little shop in the village by the lake.",
+  traits: ["Hardworking", "Not afraid to fail", "Attentive", "Kind"],
+  keeperSays: "Welcome in! Let's find you the perfect fit.",
+  resume: [
+    {
+      heading: "Education",
+      items: [
+        "[Your school and expected graduation]",
+        "[Your program, or classes you liked]",
+      ],
+    },
+    {
+      heading: "Experience",
+      items: [
+        "[Job, volunteer role or team: where and when]",
+        "[One thing you did or learned there]",
+      ],
+    },
+    {
+      heading: "Skills",
+      items: [
+        "[A skill you're proud of]",
+        "[Another skill]",
+        "[Languages you speak]",
+      ],
+    },
+    {
+      heading: "Figure skating",
+      items: [
+        "[Your level or tests passed]",
+        "[Your club or home rink]",
+        "[Competitions, shows or coaching]",
+      ],
+    },
+  ],
+  resumeLink: "",
+  resumeLinkLabel: "Download my resume (PDF)",
+};
+
+/*
+  ------------------------------------------------------------
+  ARTIFACT CARDS
+  ------------------------------------------------------------
 
   Fields:
     number      Artifact number (1 to 5). Don't change these.
@@ -20,10 +108,6 @@
                 For an idea card, this is where your idea goes.
     art         Which little concept picture to show:
                 "mountain", "tracker", "coach", "language", or "calendar".
-
-  Tip: keep the quote marks and the comma at the end of each line.
-  If the page goes blank after an edit, a missing quote or comma is
-  almost always the reason.
 */
 
 window.ARTIFACTS = [
