@@ -3130,7 +3130,7 @@
     fittingShop: 1,
     shopName: "Skate Fitting",
     greeting: "Hi, I'm Nick",
-    about: "I have a passion for figure skating, ask me about how to join UW Figure Skating Team. I'm learning to build websites and apps. This quarter I'm making five projects,and each one gets its own little shop in the village by the lake.",
+    about: "I have a passion for figure skating, ask me about how to join the UW Figure Skating Team. I'm learning to build websites and apps. This quarter I'm making five projects,and each one gets its own little shop in the village by the lake.",
     traits: ["Hardworking", "Not afraid to fail", "Attentive"],
     keeperSays: "Welcome in! Let's find you the perfect fit.",
     resumeLinkLabel: "Download my resume"
