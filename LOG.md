@@ -269,3 +269,21 @@ What I asked the AI for, what changed, and what I decided. Newest entries go at 
 - Artifact 2 is now a finished card: title MySkate, an "Open MySkate" button that goes to https://iisurf.github.io/MySkate/, and a short reflection. The card's picture is still the tracker.
 - MySkate lives in its own repository (github.com/iiSurf/MySkate) with its own log, roadmap and tests. Nothing in this site's design or scenes changed.
 
+
+---
+
+## 2026-10-17 · A finished window and a board that keeps the link in view
+
+### What I asked for
+
+- Artifact 2's shop window still looked closed off, with window bars across a dim picture, like the idea shops. It should look finished and lit like the fitting shop's window.
+- The link to MySkate was hidden: you had to scroll to the bottom of the text to see it.
+- The text on the board was not placed like it is on the fitting shop's board.
+
+### What changed
+
+- A finished card's shop (status "done") now gets a lit, open window like the fitting shop's: one big pane, no bars, and a display on a shelf. MySkate's window shows the white skate, a gold medal and a little bar chart hanging from a brass rail. Any other finished card gets its picture in a frame on the shelf. The idea shops keep the barred window and the dim picture.
+- The window's skate drawing is now shared with the fitting shop (`windowSkate`), and the pane and shelf are small helpers (`windowPane`, `SHELF`).
+- An artifact's board is now the same board as the fitting shop's: a felt board in a wooden frame. The number, the title and the link stay at the top and only the reflection scrolls under them. The link is a cream tab under the title, so it is always in view.
+- The shopkeeper's speech bubble now sits over their head instead of to the left, where it covered the board.
+- On phones held sideways the board moves to the left with the shopkeeper beside it and drops the number row, so the words get room. I checked a big desktop, a laptop, a tablet, a phone and a small phone, and the fitting shop and the idea shops look the same as before.

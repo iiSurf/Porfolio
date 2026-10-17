@@ -3106,8 +3106,8 @@
       stripes +
       '<rect x="30" y="200" width="116" height="96" fill="url(#' + id + 'in)"/>' +
       '<rect class="win-glow" x="30" y="200" width="116" height="96" fill="url(#' + id + 'gl)"/>' +
-      (o.win || '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + art + '</svg>' +
-        '<path d="M30,200 h116 v96 h-116 Z M88,200 V296 M30,248 H146" fill="none" stroke="' + p.trim + '" stroke-width="5"/>') +
+      (o.win || (a && a.status === "done" ? doneWindowArt(a, p) : '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + art + '</svg>' +
+        '<path d="M30,200 h116 v96 h-116 Z M88,200 V296 M30,248 H146" fill="none" stroke="' + p.trim + '" stroke-width="5"/>')) +
       '<rect x="24" y="294" width="128" height="10" rx="5" fill="#ffffff"/>' +
       '<path class="door-light" d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="#ffd58a"/>' +
       '<g class="shop-door"><path d="M162,330 V230 Q162,206 186,206 Q210,206 210,230 V330 Z" fill="' + p.door + '"/>' +
@@ -3187,6 +3187,21 @@
       ">" + esc(t.toUpperCase()) + "</text>";
   }
 
+  // A white figure skate with a soft shadow (inside a 120 x 90 window box), shared by the shop windows that show one
+  function windowSkate() {
+    return '<ellipse cx="44" cy="77.5" rx="34" ry="3.6" fill="#ff8fc8" opacity=".35"/>' +
+      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L60,66 C66,66 69,63 68,58 C67,53 62,51 56,49 C50,47 45,42 43,34 L42,14 Z" fill="#ffffff"/>' +
+      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L24,66 L24,60 C25,46 26.5,30 27.5,14 Z" fill="#e2ddef"/>' +
+      '<rect x="20" y="10.5" width="25" height="6" rx="3" fill="#f3eefe"/>' +
+      '<path d="M41.5,17.5 L35.5,21 L42,23.5 L36,27 L42.8,29.5 L37.5,33 L45.5,35.5 L41.5,39 L51,41.5" fill="none" stroke="#ff8fc8" stroke-width="1.5" stroke-linejoin="round"/>' +
+      '<path d="M41,13 c-6,-6.5 -10,.5 0,0 c6,-6.5 10,.5 0,0" fill="none" stroke="#ff8fc8" stroke-width="1.4"/>' +
+      '<rect x="18" y="59.5" width="10" height="6.5" rx="1" fill="#cfc9e3"/><rect x="18" y="66" width="46" height="2.8" rx="1.2" fill="#cfc9e3"/>' +
+      '<path d="M21,68.5 h9 l-1,5.2 h-7 Z M50,68.5 h10 l-1,5.2 h-8 Z" fill="#c9d1e0"/>' +
+      '<path d="M14,73.5 H65 C70,73.5 73,71.2 73.4,67.2 L75.6,67.2 C76.6,73.4 72.6,77.2 65.6,77.2 H16 C13,77.2 12.4,73.5 14,73.5 Z" fill="#e8edf6"/>' +
+      '<path d="M15,76.2 H65.5" stroke="#aab2c6" stroke-width="1"/><path d="M75.2,66.8 l2.4,.9 l-2,1 l2.2,1.1 l-2,1" fill="none" stroke="#c9d1e0" stroke-width="1"/>' +
+      '<path d="M64,18 L65.3,21.7 L69,23 L65.3,24.3 L64,28 L62.7,24.3 L59,23 L62.7,21.7 Z" fill="#fff2c8"/>';
+  }
+
   // The fitting shop's window display (a 120 x 90 box like ART): a white figure skate on a little shelf,
   // and two soft blade guards hanging from a brass rail, a bunny and a strawberry
   function fitWindowArt(p) {
@@ -3202,25 +3217,41 @@
       '<rect x="82" y="44" width="33" height="11" rx="5.5" fill="#e0457a"/><rect x="84" y="45.5" width="28" height="2.6" rx="1.3" fill="#ff8fc8" opacity=".55"/>' +
       '<g fill="#ffd36b"><ellipse cx="90" cy="51" rx=".7" ry="1"/><ellipse cx="95" cy="48.6" rx=".7" ry="1"/><ellipse cx="100" cy="51.4" rx=".7" ry="1"/><ellipse cx="105" cy="48.8" rx=".7" ry="1"/><ellipse cx="110" cy="51" rx=".7" ry="1"/></g>' +
       '<path d="M82,49.5 L78.5,45.5 L83.5,47 L84,43 L86,47.5 L89.5,45.8 L87.5,49.5 L89.5,53.2 L86,51.5 L84,56 L83.5,52 L78.5,53.5 Z" fill="#2f9a6a"/>';
-    var skate =
-      '<ellipse cx="44" cy="77.5" rx="34" ry="3.6" fill="#ff8fc8" opacity=".35"/>' +
-      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L60,66 C66,66 69,63 68,58 C67,53 62,51 56,49 C50,47 45,42 43,34 L42,14 Z" fill="#ffffff"/>' +
-      '<path d="M22,14 C21,30 19,46 18,60 L18,66 L24,66 L24,60 C25,46 26.5,30 27.5,14 Z" fill="#e2ddef"/>' +
-      '<rect x="20" y="10.5" width="25" height="6" rx="3" fill="#f3eefe"/>' +
-      '<path d="M41.5,17.5 L35.5,21 L42,23.5 L36,27 L42.8,29.5 L37.5,33 L45.5,35.5 L41.5,39 L51,41.5" fill="none" stroke="#ff8fc8" stroke-width="1.5" stroke-linejoin="round"/>' +
-      '<path d="M41,13 c-6,-6.5 -10,.5 0,0 c6,-6.5 10,.5 0,0" fill="none" stroke="#ff8fc8" stroke-width="1.4"/>' +
-      '<rect x="18" y="59.5" width="10" height="6.5" rx="1" fill="#cfc9e3"/><rect x="18" y="66" width="46" height="2.8" rx="1.2" fill="#cfc9e3"/>' +
-      '<path d="M21,68.5 h9 l-1,5.2 h-7 Z M50,68.5 h10 l-1,5.2 h-8 Z" fill="#c9d1e0"/>' +
-      '<path d="M14,73.5 H65 C70,73.5 73,71.2 73.4,67.2 L75.6,67.2 C76.6,73.4 72.6,77.2 65.6,77.2 H16 C13,77.2 12.4,73.5 14,73.5 Z" fill="#e8edf6"/>' +
-      '<path d="M15,76.2 H65.5" stroke="#aab2c6" stroke-width="1"/><path d="M75.2,66.8 l2.4,.9 l-2,1 l2.2,1.1 l-2,1" fill="none" stroke="#c9d1e0" stroke-width="1"/>' +
-      '<path d="M64,18 L65.3,21.7 L69,23 L65.3,24.3 L64,28 L62.7,24.3 L59,23 L62.7,21.7 Z" fill="#fff2c8"/>';
-    return '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' +
-        '<rect x="0" y="80" width="120" height="6" rx="1.5" fill="#a8794a"/><rect x="0" y="80" width="120" height="1.6" fill="#c79a63"/>' +
-        '<rect x="77" y="10.5" width="40" height="2.6" rx="1.3" fill="#f2b83f"/>' +
-        skate + bunny + berry +
-      "</svg>" +
-      // one big display pane: no window bars across the skate
+    return windowPane(p, SHELF + '<rect x="77" y="10.5" width="40" height="2.6" rx="1.3" fill="#f2b83f"/>' + windowSkate() + bunny + berry);
+  }
+
+  // One big display pane (a 120 x 90 box in the shop window) with a frame and no bars across the display
+  function windowPane(p, inner) {
+    return '<svg x="34" y="206" width="108" height="82" viewBox="0 0 120 90">' + inner + "</svg>" +
       '<path d="M30,200 h116 v96 h-116 Z" fill="none" stroke="' + p.trim + '" stroke-width="5"/>';
+  }
+  var SHELF = '<rect x="0" y="80" width="120" height="6" rx="1.5" fill="#a8794a"/><rect x="0" y="80" width="120" height="1.6" fill="#c79a63"/>';
+  var SPARKLE = '<path d="M98,56 L99.3,59.7 L103,61 L99.3,62.3 L98,66 L96.7,62.3 L93,61 L96.7,59.7 Z" fill="#fff2c8"/>';
+
+  // A finished card's shop window is lit and open like the fitting shop's: one pane, a display on a shelf, no window bars.
+  // MySkate (art "tracker") shows its skate beside a gold medal and a little bar chart hanging from a brass rail; any
+  // other finished card shows its concept picture in a frame on the shelf.
+  var DONE_DISPLAY = {
+    tracker: function () {
+      return '<rect x="77" y="10.5" width="40" height="2.6" rx="1.3" fill="#f2b83f"/>' +
+        windowSkate() +
+        // the gold medal on its ribbon
+        '<path d="M82,13 H94 L91,31 H85 Z" fill="#e0457a"/><path d="M86,13 H90 L89,31 H87 Z" fill="#ff8fc8"/>' +
+        '<circle cx="88" cy="38" r="9" fill="#f2b83f" stroke="#c48a1e" stroke-width="1.2"/><circle cx="88" cy="38" r="6.2" fill="none" stroke="#ffe9a8" stroke-width="1"/>' +
+        '<path d="M88,33.4 L89.4,36.5 L92.7,36.8 L90.2,39 L91,42.2 L88,40.5 L85,42.2 L85.8,39 L83.3,36.8 L86.6,36.5 Z" fill="#fff6d4"/>' +
+        // the bar chart tag
+        '<path d="M103,13 L108,24 M113,13 L108,24" stroke="#f2b83f" stroke-width="1" fill="none"/>' +
+        '<rect x="98" y="24" width="20" height="26" rx="3" fill="#fff8f3"/>' +
+        '<rect x="100" y="39" width="3.2" height="7" rx="1" fill="#7be3ff"/><rect x="104.8" y="34" width="3.2" height="12" rx="1" fill="#c79be6"/>' +
+        '<rect x="109.6" y="30" width="3.2" height="16" rx="1" fill="#e0457a"/><rect x="114.4" y="27" width="2.4" height="19" rx="1" fill="#f2b83f"/>' +
+        SPARKLE;
+    }
+  };
+  function doneWindowArt(a, p) {
+    var show = DONE_DISPLAY[a && a.art];
+    return windowPane(p, SHELF + (show ? show() :
+      '<rect x="14" y="8" width="92" height="68" rx="6" fill="rgba(14,10,18,.55)" stroke="#f2b83f" stroke-width="2"/>' +
+      '<g transform="translate(17,10) scale(.72)">' + (ART[a && a.art] || ART.mountain) + "</g>" + SPARKLE));
   }
 
   // The fitting shop's front: the same shop as the others, with its own sign, window display and neon skate
@@ -3350,12 +3381,17 @@
         '<g fill="#2f9a6a"><ellipse cx="1452" cy="176" rx="12" ry="26" transform="rotate(20 1452 176)"/><ellipse cx="1468" cy="200" rx="10" ry="30"/><ellipse cx="1492" cy="190" rx="11" ry="28" transform="rotate(-10 1492 190)"/><ellipse cx="1512" cy="172" rx="12" ry="24" transform="rotate(-24 1512 172)"/></g>' +
       "</svg>" +
       '<button type="button" class="int-back" id="intBack"><span aria-hidden="true">&larr;</span> Back to the village</button>' +
-      '<section class="board" aria-labelledby="boardTitle">' +
-        '<div class="row head"><span>Artifact ' + esc(a.number) + '</span><span class="tag">' + (done ? "&#9733; Open" : "&#9825; Idea") + "</span></div>" +
-        '<h2 class="row title" id="boardTitle">' + esc(a.title) + "</h2>" +
-        '<div class="row label">' + (done ? "Reflection" : "The idea") + "</div>" +
-        '<p class="board-text">' + esc(a.reflection) + "</p>" +
-        '<div class="row foot">' + link + "</div>" +
+      // the same board as the fitting shop's: the top (name, title and the link) stays put and the words scroll under it
+      '<section class="board card-board" aria-labelledby="boardTitle">' +
+        '<div class="fit-top">' +
+          '<div class="row head"><span>Artifact ' + esc(a.number) + '</span><span class="tag">' + (done ? "&#9733; Open" : "&#9825; Idea") + "</span></div>" +
+          '<h2 class="row title" id="boardTitle">' + esc(a.title) + "</h2>" +
+          '<div class="row card-go">' + link + "</div>" +
+        "</div>" +
+        '<div class="fit-scroll">' +
+          '<div class="row label">' + (done ? "Reflection" : "The idea") + "</div>" +
+          '<p class="board-text">' + esc(a.reflection) + "</p>" +
+        "</div>" +
       "</section>" +
       '<div class="keeper"><p class="keeper-say">' + say + "</p>" + keeperSVG(i) + "</div>" +
       '<div class="counter" aria-hidden="true">' +

@@ -493,6 +493,48 @@ html.in-shop, html.in-shop body { overflow: hidden; }
 a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: none; }
 .board-link.pending { color: #e8d6b5; text-shadow: 0 2px 0 rgba(0, 0, 0, .45); font-size: .82rem; }
 
+/* An artifact's board is the fitting shop's board: a felt board in a wooden frame, the top (number, title and the link
+   to the artifact) fixed and the words scrolling under it. .fit-top and .fit-scroll are shared with the fitting shop. */
+.board.card-board {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 10px 0 18px;
+  border: 7px solid #8a6238;
+  border-top-color: #a8794a;
+  border-radius: 16px;
+  background: rgb(22, 16, 26);
+  background: color-mix(in srgb, var(--wall) 10%, rgba(14, 10, 18, .96));
+  container-type: inline-size;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .4), 0 0 0 1px #5c3e24, inset 0 0 0 2px rgba(0, 0, 0, .35), inset 0 8px 18px rgba(0, 0, 0, .3);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.card-board .head { flex-wrap: wrap; }
+.card-board .title { font-size: clamp(1.35rem, 2.3vw, 2.2rem); }
+.card-board .fit-scroll .label { margin-top: 4px; }
+/* the link sits on its own ledge under the title, shaped like a board tab, so it is always in view */
+.board .card-go { margin-bottom: 22px; }
+.card-go .board-link {
+  padding: 9px 16px 8px;
+  border-radius: 8px 8px 3px 3px;
+  background: #fbe9d0;
+  color: #3a2400;
+  font: 800 .8rem/1.2 var(--font-display);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  text-shadow: none;
+  box-shadow: 0 0 16px rgba(255, 213, 138, .4);
+}
+.card-go a.board-link:hover, .card-go a.board-link:focus-visible { background: #fff; color: #3a2400; }
+.card-go a.board-link:focus-visible { outline: 3px solid var(--neon); outline-offset: 3px; }
+.card-go .board-link.pending { background: none; box-shadow: none; padding: 0; color: #e8d6b5; font-size: .78rem; }
+@container (max-width: 400px) {
+  .card-board .head { font-size: .78rem; }
+  .card-board .title { font-size: 1.3rem; }
+  .card-go .board-link { padding: 8px 12px 7px; font-size: .72rem; letter-spacing: .07em; }
+}
+
 /* Shopkeeper behind the counter */
 .keeper {
   position: absolute;
@@ -506,10 +548,11 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
 .keeper-eyes { transform-box: fill-box; transform-origin: center; animation: blink 5s infinite; }
 @keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.1); } }
 @keyframes keeper { 50% { transform: translateY(-4px); } }
+/* the bubble sits over the shopkeeper's head (not to the left of it, where it would cover the board) */
 .keeper-say {
   position: absolute;
-  right: 62%;
-  bottom: 80%;
+  right: 0;
+  bottom: 94%;
   width: 210px;
   margin: 0;
   padding: 10px 14px;
@@ -520,6 +563,16 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
   font-size: .82rem;
   line-height: 1.35;
   box-shadow: 0 8px 20px rgba(0, 0, 0, .35);
+}
+/* its tail points down at the shopkeeper's head (the head is half way across the shopkeeper) */
+.keeper > .keeper-say::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: max(24px, calc(210px - min(12vw, 150px) - 9px));
+  border: 9px solid transparent;
+  border-top-color: #fbe9d0;
+  border-bottom-width: 0;
 }
 
 .counter {
@@ -589,6 +642,13 @@ a.board-link:hover, a.board-link:focus-visible { color: var(--neon); outline: no
   .keeper { right: 50%; transform: translateX(50%); bottom: calc(13svh - 20px); width: auto; height: 22vh; height: 22svh; animation: none; }
   .keeper-svg { height: 100%; width: auto; }
   .keeper-say { display: none; }
+}
+/* Phones held sideways: the board on the left with the shopkeeper beside it, and no number row, so the words get the room */
+@media (min-aspect-ratio: 1/1) and (max-height: 520px) {
+  .board.card-board { top: 56px; left: 16px; right: auto; width: min(62vw, 600px); max-height: calc(100% - 56px - 13svh - 8px); padding-top: 10px; }
+  .card-board .fit-top .head { display: none; }
+  .board.card-board .row { margin-bottom: 14px; }
+  .keeper { right: 3vw; transform: none; bottom: calc(13svh - 18px); height: 52vh; height: 52svh; }
 }
 
 /* ---------- Inside the skate fitting shop ----------
