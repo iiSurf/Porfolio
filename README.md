@@ -1,6 +1,6 @@
 # My Portfolio
 
-- Live Website here [my Portfolio](https://iisurf.github.io/Porfolio/).
+- Live Website here [my Portfolio](https://iisurf.github.io/Portfolio/).
 
 
 My portfolio for this quarter: a paper-cut frozen lake where figure skaters practice their axel jumps under glowing lanterns, and a village with one cozy shop for each of my five artifacts.
