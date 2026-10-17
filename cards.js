@@ -51,18 +51,18 @@
 window.ABOUT = {
   fittingShop: 1,
   shopName: "Skate Fitting",
-  greeting: "Hi, I'm nic",
+  greeting: "Hi, I'm nick",
   about:
-    "I love figure skating, and I'm learning to build websites and apps. " +
+    "I love figure skating, ask me about how to join the UW Figure Skating Team." +
     "This quarter I'm making five projects, and each one gets its own little shop in the village by the lake.",
-  traits: ["Hardworking", "Not afraid to fail", "Attentive", "Kind"],
+  traits: ["Hardworking", "Not afraid to fail", "Attentive"],
   keeperSays: "Welcome in! Let's find you the perfect fit.",
   resume: [
     {
       heading: "Education",
       items: [
-        "[Your school and expected graduation]",
-        "[Your program, or classes you liked]",
+        "University of Washington Tacoma",
+        "TCSS 490: Special Topics in Computing and Software Systems",
       ],
     },
     {
@@ -73,11 +73,11 @@ window.ABOUT = {
       ],
     },
     {
-      heading: "Skills",
+      heading: "Skills & Certificates",
       items: [
-        "[A skill you're proud of]",
-        "[Another skill]",
-        "[Languages you speak]",
+        "AWS Certified Cloud Practitioner",
+        "Microsoft Certified: Azure Fundamentals",
+        "Java, Javascript, AWS, Azure, React",
       ],
     },
     {
