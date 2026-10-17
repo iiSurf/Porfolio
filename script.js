@@ -3102,7 +3102,8 @@
       '<path d="M44,128 V330 M74,128 V330 M104,128 V330 M134,128 V330 M164,128 V330 M194,128 V330" stroke="#000" stroke-opacity=".08" stroke-width="2"/>' +
       bulbs +
       '<rect class="shop-sign" x="48" y="142" width="144" height="28" rx="5" fill="' + p.trim + '"/>' +
-      (o.sign || '<text x="120" y="161" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="12" font-weight="800" letter-spacing="1.5" fill="' + p.wall + '">ARTIFACT ' + (a.number) + '</text>') +
+      (o.sign || (a && a.status === "done" && isText(a.shopName || a.title) ? signText(String(a.shopName || a.title).trim(), p.wall) :
+        '<text x="120" y="161" text-anchor="middle" font-family="Unbounded, Arial Black, sans-serif" font-size="12" font-weight="800" letter-spacing="1.5" fill="' + p.wall + '">ARTIFACT ' + (a.number) + '</text>')) +
       stripes +
       '<rect x="30" y="200" width="116" height="96" fill="url(#' + id + 'in)"/>' +
       '<rect class="win-glow" x="30" y="200" width="116" height="96" fill="url(#' + id + 'gl)"/>' +
@@ -3271,8 +3272,10 @@
     var a = s.a, done = a.status === "done";
     return '<button type="button" class="shop" data-i="' + i + '" aria-label="Artifact ' + esc(a.number) + ': ' + esc(a.title) + '. Step inside">' +
       shopSVG(a, s.ai) +
-      '<span class="shop-label"><span class="shop-head"><span class="shop-num">Artifact ' + esc(a.number) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Open" : "Idea") + "</span></span>" +
+      // a finished shop has its name on the sign, so "Artifact N" moves under the title (like "+ Artifact 1" in the fitting shop)
+      '<span class="shop-label"><span class="shop-head"><span class="shop-num">' + (done ? "Try it" : "Artifact " + esc(a.number)) + '</span><span class="chip ' + (done ? "done" : "idea") + '">' + (done ? "Open" : "Idea") + "</span></span>" +
       '<span class="shop-title">' + esc(a.title) + "</span>" +
+      (done ? '<span class="shop-also">Artifact ' + esc(a.number) + "</span>" : "") +
       '<span class="shop-open">Step inside &rarr;</span></span>' +
       "</button>";
   }

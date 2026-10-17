@@ -287,3 +287,16 @@ What I asked the AI for, what changed, and what I decided. Newest entries go at 
 - An artifact's board is now the same board as the fitting shop's: a felt board in a wooden frame. The number, the title and the link stay at the top and only the reflection scrolls under them. The link is a cream tab under the title, so it is always in view.
 - The shopkeeper's speech bubble now sits over their head instead of to the left, where it covered the board.
 - On phones held sideways the board moves to the left with the shopkeeper beside it and drops the number row, so the words get room. I checked a big desktop, a laptop, a tablet, a phone and a small phone, and the fitting shop and the idea shops look the same as before.
+
+---
+
+## 2026-10-17 · MySkate's name on its sign
+
+### What I asked for
+
+- Shop 2's sign said "Artifact 2" when it should say MySkate, and "Artifact 2" was missing under the MySkate name below the shop.
+
+### What changed
+
+- A finished card's shop now shows its name on the sign (MYSKATE). A card can set its own sign words with a `shopName` field in `cards.js`; without one the sign uses the card's title. The idea shops still say "Artifact 3", "Artifact 4" and "Artifact 5".
+- Under the shop, "Artifact 2" now sits under the title (like "+ Artifact 1: My Portfolio" under the fitting shop). The small line above the title, which used to say "Artifact 2", now says "Try it", next to the Open badge.
