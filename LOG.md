@@ -255,3 +255,17 @@ What I asked the AI for, what changed, and what I decided. Newest entries go at 
 - The mountains have three chairlifts with towers, cables and moving chairs carrying tiny riders, a little resort village with lit windows at the base, and floodlit runs that glow, with tiny skiers and snowboarders curving down them. All three lifts show on phones too.
 - The animals, chairs and skiers stop moving while you're in the village or a shop, and stay still for people who turn on reduced motion.
 - I asked for this version to go into my site files before the last review round. Any fixes from that round get their own entry below.
+
+---
+
+## 2026-10-17 · Artifact 2 is live: MySkate
+
+### What I asked for
+
+- Build the figure skating tracker from my idea, as its own project, and connect it to the Artifact 2 card so it opens from this site.
+
+### What changed
+
+- Artifact 2 is now a finished card: title MySkate, an "Open MySkate" button that goes to https://iisurf.github.io/MySkate/, and a short reflection. The card's picture is still the tracker.
+- MySkate lives in its own repository (github.com/iiSurf/MySkate) with its own log, roadmap and tests. Nothing in this site's design or scenes changed.
+
